@@ -1,0 +1,8 @@
+/target/
+/vendor/
+/models/*.gguf
+/models/*.part
+/dist/
+/.DS_Store
+/artifacts/
+__pycache__/

@@ -1,0 +1,16 @@
+{
+  "repository": "AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF",
+  "revision": "59c519158371694388490c96741724a70c8c6276",
+  "files": [
+    {
+      "name": "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-IQ4_NL.gguf",
+      "bytes": 19678656672,
+      "sha256": "0c47d4ab6c783e7606ec03714b354fab0b2052027a7ea1991e7e2d3009c345ad"
+    },
+    {
+      "name": "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-Encoder-F16.gguf",
+      "bytes": 1670410080,
+      "sha256": "4221029c8a565c4a80c507ffa760c716e595acf663f9f4273ce69910050e7ba2"
+    }
+  ]
+}
