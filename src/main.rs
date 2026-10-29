@@ -1,5 +1,6 @@
 mod audio;
 mod backend;
+mod bootstrap;
 mod config;
 mod control;
 mod model;
@@ -17,7 +18,7 @@ use config::Config;
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -45,12 +46,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare Nemo.app from this Cargo-installed executable.
+    Install {
+        /// Allow an update that may require granting macOS permissions again.
+        #[arg(long)]
+        allow_permission_reset: bool,
+    },
     /// Manage pinned model weights in Application Support.
     Model {
         #[command(subcommand)]
         command: ModelCommand,
     },
-    /// Run the menu bar daemon.
+    /// Run the menu bar daemon directly, without installing an app.
     Run,
     /// Start recording, or stop and transcribe.
     Toggle,
@@ -145,8 +152,21 @@ fn main() {
 
 fn execute() -> Result<()> {
     let cli = Cli::parse();
+    let command = match cli.command {
+        None if !bootstrap::bundled() => return bootstrap::launch(),
+        Some(Command::Install {
+            allow_permission_reset,
+        }) => {
+            let app = bootstrap::install(allow_permission_reset)?;
+            println!("Installed {}. Run `nemo` to open it.", app.display());
+            return Ok(());
+        }
+        None => Command::Run,
+        Some(command) => command,
+    };
     let mut config = Config::load()?;
-    match cli.command.unwrap_or(Command::Run) {
+    match command {
+        Command::Install { .. } => unreachable!(),
         Command::Run => run(config),
         Command::Toggle => remote("toggle"),
         Command::Cancel => remote("cancel"),
@@ -303,6 +323,21 @@ fn icon(color: [u8; 3]) -> Icon {
     Icon::from_rgba(rgba, 22, 22).expect("valid icon")
 }
 
+fn startup_action(
+    config: &Config,
+    bundled: bool,
+    managed_model: &Path,
+    managed_ready: bool,
+) -> Option<&'static str> {
+    if bundled && config.model == managed_model && !managed_ready {
+        Some("download")
+    } else if config.preload_model && config.check_assets().is_ok() {
+        Some("warm")
+    } else {
+        None
+    }
+}
+
 fn run(mut config: Config) -> Result<()> {
     let server = control::Server::bind()?;
     fs::create_dir_all(config::data_dir())?;
@@ -405,6 +440,12 @@ fn run(mut config: Config) -> Result<()> {
                 socket_status.lock().unwrap().clone()
             } else if command == "permissions" {
                 serde_json::to_string(&permissions::Snapshot::current()).unwrap()
+            } else if command == "identity" {
+                serde_json::json!({
+                    "pid": std::process::id(),
+                    "executable": std::env::current_exe().ok(),
+                })
+                .to_string()
             } else if command == "quit-idle" {
                 let (reply, receiver) = mpsc::channel();
                 if proxy.send_event(Event::QuitIfIdle(reply)).is_err() {
@@ -528,10 +569,16 @@ fn run(mut config: Config) -> Result<()> {
 
     let mut next_permissions_check = Instant::now();
     let mut last_permissions = None;
-    if config.preload_model && config.check_assets().is_ok() {
+    let store = model::Store::managed();
+    if let Some(action) = startup_action(
+        &config,
+        bootstrap::bundled(),
+        &store.decoder(),
+        store.ready(),
+    ) {
         let _ = event_loop
             .create_proxy()
-            .send_event(Event::Action("warm".into()));
+            .send_event(Event::Action(action.into()));
     }
     event_loop.run(move |event, _, flow| {
         let _keep_alive = (&server, &hotkeys);
@@ -723,4 +770,50 @@ fn run(mut config: Config) -> Result<()> {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn a_bundled_first_run_downloads_missing_managed_weights_before_preloading() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config {
+            model: root.path().join("decoder.gguf"),
+            runtime: root.path().join("nemo-speech"),
+            preload_model: true,
+            ..Config::default()
+        };
+        fs::write(&config.model, b"decoder").unwrap();
+        fs::write(&config.runtime, b"runtime").unwrap();
+        assert_eq!(
+            startup_action(&config, true, &config.model, false),
+            Some("download")
+        );
+        assert_eq!(
+            startup_action(&config, true, &config.model, true),
+            Some("warm")
+        );
+    }
+
+    #[test]
+    fn ready_models_and_explicit_unbundled_runs_do_not_download_at_startup() {
+        let config = Config::default();
+        assert_eq!(startup_action(&config, true, &config.model, true), None);
+        assert_eq!(startup_action(&config, false, &config.model, false), None);
+    }
+
+    #[test]
+    fn a_custom_model_is_never_replaced_by_an_automatic_download() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config {
+            model: root.path().join("custom.gguf"),
+            ..Config::default()
+        };
+        assert_eq!(
+            startup_action(&config, true, &root.path().join("managed.gguf"), false),
+            None
+        );
+    }
 }

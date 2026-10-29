@@ -26,6 +26,12 @@ fn fresh_configuration_works_outside_the_checkout() {
     let model = std::path::PathBuf::from(config["model"].as_str().unwrap());
     assert!(model.starts_with(root.path().join("data/models")));
     assert!(!config["runtime"].as_str().unwrap().contains("vendor"));
+    assert_eq!(
+        config["runtime"].as_str(),
+        root.path()
+            .join("home/Applications/Nemo.app/Contents/Resources/runtime/nemo-speech")
+            .to_str()
+    );
     assert!(config.get("remove_trailing_period").is_none());
     let path = cli(root.path(), &["model", "path"]);
     assert_eq!(
@@ -88,6 +94,79 @@ fn missing_model_verification_fails_without_downloading_or_creating_files() {
     let root = tempfile::tempdir().unwrap();
     assert!(!cli(root.path(), &["model", "verify"]).status.success());
     assert!(!root.path().join("data/models").exists());
+}
+
+#[test]
+fn explicit_inspection_commands_never_bootstrap_an_application() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("Nemo.app");
+    for arguments in [
+        vec!["--help"],
+        vec!["config"],
+        vec!["permissions"],
+        vec!["model", "path"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_nemo"))
+            .args(arguments)
+            .env("NEMO_DATA_DIR", root.path().join("data"))
+            .env("NEMO_APP_PATH", &app)
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!app.exists());
+        assert!(!root.path().join("data/runtime-builds").exists());
+        assert!(!root.path().join("data/models").exists());
+    }
+}
+
+#[test]
+fn configuration_uses_an_explicit_app_destination_before_it_is_installed() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("Nemo.app");
+    let output = Command::new(env!("CARGO_BIN_EXE_nemo"))
+        .arg("config")
+        .env("NEMO_DATA_DIR", root.path().join("data"))
+        .env("NEMO_APP_PATH", &app)
+        .env_remove("NEMO_RUNTIME")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let config: toml::Value = toml::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(
+        config["runtime"].as_str(),
+        app.join("Contents/Resources/runtime/nemo-speech").to_str()
+    );
+    assert!(!app.exists());
+}
+
+#[test]
+fn invalid_bootstrap_paths_fail_before_creating_setup_state() {
+    let root = tempfile::tempdir().unwrap();
+    for (data, app) in [
+        (
+            root.path().join("data"),
+            std::path::PathBuf::from("relative/Nemo.app"),
+        ),
+        (
+            std::path::PathBuf::from("relative-data"),
+            root.path().join("Nemo.app"),
+        ),
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_nemo"))
+            .env("NEMO_DATA_DIR", data)
+            .env("NEMO_APP_PATH", app)
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("absolute path"));
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
 }
 
 #[test]

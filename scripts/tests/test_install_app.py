@@ -16,6 +16,11 @@ SPEC.loader.exec_module(installer)
 
 class InstallerTests(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop('NEMO_DATA_DIR', None)
+        os.environ.pop('NEMO_RUNTIME', None)
         self.temporary = tempfile.TemporaryDirectory(prefix='nemo-installer-test-')
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -70,6 +75,70 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.version(self.destination), '0.2.0')
         self.assertEqual(self.version(backup), '0.1.0')
         installer.verify(backup)
+
+    def test_no_launch_leaves_an_upgraded_running_app_stopped(self):
+        self.old_app()
+        run = installer.run
+
+        def checked_run(*args):
+            self.assertNotEqual(args[0], '/usr/bin/open')
+            return run(*args)
+
+        with mock.patch.object(installer, 'stop_idle_app', return_value=True), mock.patch.object(installer, 'run', side_effect=checked_run):
+            backup = installer.install(self.source, self.destination, allow_permission_reset=True, launch=False)
+        self.assertEqual(self.version(self.destination), '0.2.0')
+        self.assertEqual(self.version(backup), '0.1.0')
+        installer.verify(self.destination)
+
+    def test_no_launch_still_reopens_the_previous_app_after_failure(self):
+        self.old_app()
+        verify = installer.verify
+        run = installer.run
+        reopened = []
+
+        def failing_verify(app):
+            verify(app)
+            if Path(app) == self.destination and self.version(app) == '0.2.0':
+                raise RuntimeError('post-install failure')
+
+        def checked_run(*args):
+            if args[0] == '/usr/bin/open':
+                reopened.append(Path(args[1]))
+                return ''
+            return run(*args)
+
+        with mock.patch.object(installer, 'verify', side_effect=failing_verify), mock.patch.object(installer, 'stop_idle_app', return_value=True), mock.patch.object(installer, 'run', side_effect=checked_run):
+            with self.assertRaisesRegex(RuntimeError, 'post-install failure'):
+                installer.install(self.source, self.destination, allow_permission_reset=True, launch=False)
+        self.assertEqual(self.version(self.destination), '0.1.0')
+        self.assertEqual(reopened, [self.destination])
+
+    def test_rollback_reopen_preserves_data_and_runtime_overrides(self):
+        self.old_app()
+        verify = installer.verify
+        run = installer.run
+        reopened = []
+        data = self.root / 'isolated data'
+        runtime = self.root / 'native runtime/nemo-speech'
+
+        def failing_verify(app):
+            verify(app)
+            if Path(app) == self.destination and self.version(app) == '0.2.0':
+                raise RuntimeError('post-install failure')
+
+        def checked_run(*args):
+            if args[0] == '/usr/bin/open':
+                reopened.append(args)
+                return ''
+            return run(*args)
+
+        overrides = {'NEMO_DATA_DIR': str(data), 'NEMO_RUNTIME': str(runtime), 'UNRELATED_VARIABLE': 'not forwarded'}
+        with mock.patch.dict(os.environ, overrides), mock.patch.object(installer, 'verify', side_effect=failing_verify), mock.patch.object(installer, 'stop_idle_app', return_value=True), mock.patch.object(installer, 'run', side_effect=checked_run):
+            with self.assertRaisesRegex(RuntimeError, 'post-install failure'):
+                installer.install(self.source, self.destination, allow_permission_reset=True, launch=False)
+        self.assertEqual(self.version(self.destination), '0.1.0')
+        self.assertEqual(reopened, [('/usr/bin/open', '-n', '--env', f'NEMO_DATA_DIR={data}',
+                                     '--env', f'NEMO_RUNTIME={runtime}', self.destination)])
 
     def test_staging_failure_leaves_the_old_app_untouched(self):
         self.old_app()

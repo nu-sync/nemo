@@ -2,11 +2,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 revision=6a62501107e1894723880f1094a286ea996a0ec7
-runtime=vendor/NeMo-Speech.cpp
+runtime="$PWD/vendor/NeMo-Speech.cpp"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 if [[ ! -d "$runtime/.git" ]]; then
-    git clone https://github.com/NVIDIA/NeMo-Speech.cpp "$runtime"
-    git -C "$runtime" checkout "$revision"
+    if [[ -e "$runtime" || -L "$runtime" ]]; then
+        echo "Runtime source path is not a Git checkout: $runtime" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$runtime")"
+    staging=$(mktemp -d "${runtime}.clone.XXXXXX")
+    trap 'rm -rf "$staging"' EXIT
+    git clone https://github.com/NVIDIA/NeMo-Speech.cpp "$staging/source"
+    git -C "$staging/source" checkout "$revision"
+    mv "$staging/source" "$runtime"
 fi
 if [[ "$(git -C "$runtime" rev-parse HEAD)" != "$revision" ]]; then
     echo "Runtime revision differs from the tested revision: $revision" >&2

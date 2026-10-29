@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bundle the Rust daemon and the native Metal runtime without external dylib paths."""
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -12,7 +13,11 @@ import tempfile
 root = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output', type=pathlib.Path, default=root / 'dist/Nemo.app')
-output = parser.parse_args().output.absolute()
+parser.add_argument('--binary', type=pathlib.Path, default=root / 'target/release/nemo')
+parser.add_argument('--native-dir', type=pathlib.Path, default=root / 'vendor/NeMo-Speech.cpp/build/metal-server/bin')
+parser.add_argument('--version', help='bundle version; omit to read it from Cargo metadata')
+args = parser.parse_args()
+output = args.output.absolute()
 if output.suffix != '.app':
     raise SystemExit('Output must end in .app')
 if output.resolve() == (pathlib.Path.home() / 'Applications/Nemo.app').resolve():
@@ -24,8 +29,9 @@ contents = app / 'Contents'
 runtime = contents / 'Resources/runtime'
 runtime.mkdir(parents=True, exist_ok=True)
 (contents / 'MacOS').mkdir(exist_ok=True)
-shutil.copy2(root / 'target/release/nemo', contents / 'MacOS/nemo')
-native = root / 'vendor/NeMo-Speech.cpp/build/metal-server/bin'
+shutil.copy2(args.binary, contents / 'MacOS/nemo')
+source_sha256 = hashlib.sha256((contents / 'MacOS/nemo').read_bytes()).hexdigest()
+native = args.native_dir.absolute()
 queue = [native / 'nemo-speech']
 copied = set()
 identity = os.environ.get('NEMO_SIGN_IDENTITY', '-')
@@ -70,8 +76,10 @@ while queue:
 for library in runtime.glob('*.dylib'):
     run(*signing, str(library))
 run(*signing, str(runtime / 'nemo-speech'))
-metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--locked', '--format-version', '1', '--manifest-path', str(root / 'Cargo.toml')], text=True))
-version = next(package['version'] for package in metadata['packages'] if package['name'] == 'nemo-dictate')
+version = args.version
+if version is None:
+    metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--locked', '--format-version', '1', '--manifest-path', str(root / 'Cargo.toml')], text=True))
+    version = next(package['version'] for package in metadata['packages'] if package['name'] == 'nemo-dictate')
 
 plist = {
     'CFBundleExecutable': 'nemo',
@@ -97,6 +105,9 @@ if (root / 'models/LICENSE').is_file():
 for name in ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']:
     shutil.copy2(root / 'vendor/NeMo-Speech.cpp' / name, licenses / ('NeMo-Speech-' + name))
 shutil.copy2(root / 'models/manifest.json', contents / 'Resources/model-manifest.json')
+(contents / 'Resources/install-receipt.json').write_text(
+    json.dumps({'source_sha256': source_sha256, 'version': version}, indent=2) + '\n'
+)
 run(*signing, '--entitlements', str(root / 'scripts/entitlements.plist'), str(app))
 run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(app))
 previous = pathlib.Path(workspace.name) / 'previous.app'

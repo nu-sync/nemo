@@ -20,6 +20,16 @@ def run(*args):
     return result.stdout
 
 
+def open_app(app):
+    overrides = [f'{name}={os.environ[name]}' for name in ('NEMO_DATA_DIR', 'NEMO_RUNTIME') if name in os.environ]
+    arguments = ['/usr/bin/open']
+    if overrides:
+        arguments.append('-n')
+        for value in overrides:
+            arguments.extend(['--env', value])
+    run(*arguments, app)
+
+
 def info(app):
     with (app / 'Contents/Info.plist').open('rb') as source:
         result = plistlib.load(source)
@@ -80,7 +90,7 @@ def copy_bundle(source, destination):
     run('/usr/bin/ditto', source, destination)
 
 
-def install(source, destination, allow_permission_reset=False):
+def install(source, destination, allow_permission_reset=False, launch=True):
     source = Path(source).absolute()
     destination = Path(destination).absolute()
     if source.resolve() == destination.resolve():
@@ -116,8 +126,8 @@ def install(source, destination, allow_permission_reset=False):
                     os.replace(destination, backup)
                 os.replace(staged, destination)
                 verify(destination)
-                if was_running:
-                    run('/usr/bin/open', destination)
+                if was_running and launch:
+                    open_app(destination)
             except BaseException:
                 if backup is not None and backup.exists():
                     if destination.exists():
@@ -126,7 +136,7 @@ def install(source, destination, allow_permission_reset=False):
                 elif backup is None and destination.exists():
                     os.replace(destination, Path(temporary) / 'failed.app')
                 if was_running and destination.exists():
-                    run('/usr/bin/open', destination)
+                    open_app(destination)
                 raise
         return backup
 
@@ -136,9 +146,10 @@ def main():
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parent.parent / 'dist/Nemo.app')
     parser.add_argument('--destination', type=Path, default=Path.home() / 'Applications/Nemo.app')
     parser.add_argument('--allow-permission-reset', action='store_true')
+    parser.add_argument('--no-launch', action='store_true', help='leave the upgraded app stopped after successful installation')
     args = parser.parse_args()
     try:
-        backup = install(args.source, args.destination, args.allow_permission_reset)
+        backup = install(args.source, args.destination, args.allow_permission_reset, launch=not args.no_launch)
     except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'{error}\n')
     print(f'Installed {args.destination}')

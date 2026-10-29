@@ -74,14 +74,18 @@ fn default_runtime() -> PathBuf {
     if bundled.is_file() {
         return bundled;
     }
+    if let Some(app) = std::env::var_os("NEMO_APP_PATH") {
+        return PathBuf::from(app).join("Contents/Resources/runtime/nemo-speech");
+    }
+    let adjacent = executable.parent().unwrap().join("nemo-speech");
     if let Some(home) = std::env::var_os("HOME") {
         let installed = PathBuf::from(home)
             .join("Applications/Nemo.app/Contents/Resources/runtime/nemo-speech");
-        if installed.is_file() {
+        if installed.is_file() || !adjacent.is_file() {
             return installed;
         }
     }
-    executable.parent().unwrap().join("nemo-speech")
+    adjacent
 }
 
 pub fn path() -> PathBuf {
