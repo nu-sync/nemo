@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Nemo"
+  short_description: "Verify dictation through MacBook speakers and microphone"
+  default_prompt: "Use $verify-nemo to check Nemo on this Mac with a real speaker-to-microphone recording, visible transcription, and idle model unloading."

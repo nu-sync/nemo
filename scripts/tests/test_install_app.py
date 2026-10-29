@@ -43,6 +43,19 @@ class InstallerTests(unittest.TestCase):
         installer.verify(self.destination)
         self.assertTrue(self.source.exists())
 
+    def test_same_signed_bundle_is_recognized_as_same_identity(self):
+        shutil.copytree(self.source, self.destination)
+        self.assertTrue(installer.same_identity(self.source, self.source))
+        self.assertTrue(installer.same_identity(self.source, self.destination))
+
+    def test_identical_signed_upgrade_does_not_require_permission_reset(self):
+        shutil.copytree(self.source, self.destination)
+        backup = installer.install(self.source, self.destination)
+        self.assertEqual(self.version(self.destination), '0.2.0')
+        self.assertEqual(self.version(backup), '0.2.0')
+        installer.verify(self.destination)
+        installer.verify(backup)
+
     def test_changed_identity_is_rejected_before_stopping_the_working_app(self):
         self.old_app()
         with mock.patch.object(installer, 'stop_idle_app') as stop:

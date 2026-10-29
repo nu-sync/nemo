@@ -114,11 +114,25 @@ impl Backend {
         self.base.take().is_some()
     }
 
-    pub fn ready(&mut self, canceled: &AtomicBool) -> Result<()> {
+    pub fn ready(&mut self, canceled: &AtomicBool) -> Result<bool> {
         ensure!(!canceled.load(Ordering::Acquire), "Canceled");
         if self.base.is_some() && self.process.running()? {
-            return Ok(());
+            return Ok(true);
         }
+        let started = Instant::now();
+        let result = self.load(canceled);
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "model_load",
+                "load_ms": started.elapsed().as_secs_f64() * 1000.0,
+                "success": result.is_ok(),
+            })
+        );
+        result.map(|()| false)
+    }
+
+    fn load(&mut self, canceled: &AtomicBool) -> Result<()> {
         self.unload();
         self.config.check_assets()?;
         let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -126,7 +140,8 @@ impl Backend {
         drop(listener);
         fs::create_dir_all(config::data_dir())?;
         let log = File::create(config::data_dir().join("inference.log"))?;
-        let mut child = Command::new(&self.config.runtime)
+        let mut command = Command::new(&self.config.runtime);
+        command
             .args(["serve", "--asr-model"])
             .arg(&self.config.model)
             .args([
@@ -141,7 +156,8 @@ impl Backend {
                 "--threads",
                 "4",
                 "--no-ui",
-                "--no-warmup",
+                "--asr.backend.threads",
+                &self.config.inference_threads.to_string(),
                 "--asr.salm.max_sequences",
                 "1",
                 "--asr.salm.n_ctx_per_sequence",
@@ -151,7 +167,7 @@ impl Backend {
                 "--asr.salm.n_batch",
                 "512",
                 "--asr.salm.encoder_max_batch",
-                "1",
+                &self.config.encoder_batch_size.to_string(),
                 "--asr.salm.max_new_tokens",
                 "4096",
                 "--asr.salm.mtp_draft",
@@ -160,7 +176,11 @@ impl Backend {
                 "300",
                 "--max-upload-mb",
                 "64",
-            ])
+            ]);
+        if !self.config.model_warmup {
+            command.arg("--no-warmup");
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log)
@@ -206,52 +226,91 @@ impl Backend {
     }
 
     pub fn transcribe(&mut self, audio: Vec<u8>, canceled: &AtomicBool) -> Result<String> {
-        ensure!(audio.len() <= 64 * 1024 * 1024, "WAV input exceeds 64 MiB");
-        let wav = hound::WavReader::new(std::io::Cursor::new(&audio))
-            .context("Input must be a readable WAV file")?;
-        ensure!(
-            wav.spec().sample_rate > 0 && wav.duration() > 0,
-            "WAV input is empty"
+        let started = Instant::now();
+        let mut audio_seconds = None;
+        let mut model_load_ms = None;
+        let mut reused_model = false;
+        let mut request_started = None;
+        let result = (|| {
+            ensure!(audio.len() <= 64 * 1024 * 1024, "WAV input exceeds 64 MiB");
+            let wav = hound::WavReader::new(std::io::Cursor::new(&audio))
+                .context("Input must be a readable WAV file")?;
+            ensure!(
+                wav.spec().sample_rate > 0 && wav.duration() > 0,
+                "WAV input is empty"
+            );
+            let seconds = wav.duration() as f64 / wav.spec().sample_rate as f64;
+            audio_seconds = Some(seconds);
+            ensure!(
+                seconds <= 300.0,
+                "WAV input exceeds the five-minute dictation limit"
+            );
+            let loading = Instant::now();
+            let ready = self.ready(canceled);
+            model_load_ms = Some(loading.elapsed().as_secs_f64() * 1000.0);
+            reused_model = ready?;
+            if reused_model {
+                model_load_ms = Some(0.0);
+            }
+            ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+            request_started = Some(Instant::now());
+            let part = multipart::Part::bytes(audio)
+                .file_name("recording.wav")
+                .mime_str("audio/wav")?;
+            let form = multipart::Form::new()
+                .part("file", part)
+                .text("response_format", "json");
+            let response = self
+                .client
+                .post(format!(
+                    "{}/v1/audio/transcriptions",
+                    self.base.as_ref().unwrap()
+                ))
+                .bearer_auth(&self.key)
+                .multipart(form)
+                .send()
+                .context("Transcription request failed")?;
+            let status = response.status();
+            let body = response.text()?;
+            ensure!(
+                status.is_success(),
+                "Transcription failed ({status}): {}",
+                body.chars().take(1000).collect::<String>()
+            );
+            ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+            #[derive(Deserialize)]
+            struct Transcript {
+                text: String,
+            }
+            let result: Transcript =
+                serde_json::from_str(&body).context("Invalid response from inference runtime")?;
+            let text = result.text.trim().to_string();
+            ensure!(!text.is_empty(), "No speech recognized");
+            Ok(text)
+        })();
+        let request_ms =
+            request_started.map(|start: Instant| start.elapsed().as_secs_f64() * 1000.0);
+        let real_time_factor = if result.is_ok() {
+            request_ms
+                .zip(audio_seconds)
+                .map(|(ms, seconds)| ms / 1000.0 / seconds)
+        } else {
+            None
+        };
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "transcription",
+                "audio_seconds": audio_seconds,
+                "model_load_ms": model_load_ms,
+                "request_ms": request_ms,
+                "total_ms": started.elapsed().as_secs_f64() * 1000.0,
+                "reused_model": reused_model,
+                "real_time_factor": real_time_factor,
+                "success": result.is_ok(),
+            })
         );
-        ensure!(
-            wav.duration() as f64 / wav.spec().sample_rate as f64 <= 300.0,
-            "WAV input exceeds the five-minute dictation limit"
-        );
-        self.ready(canceled)?;
-        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
-        let part = multipart::Part::bytes(audio)
-            .file_name("recording.wav")
-            .mime_str("audio/wav")?;
-        let form = multipart::Form::new()
-            .part("file", part)
-            .text("response_format", "json");
-        let response = self
-            .client
-            .post(format!(
-                "{}/v1/audio/transcriptions",
-                self.base.as_ref().unwrap()
-            ))
-            .bearer_auth(&self.key)
-            .multipart(form)
-            .send()
-            .context("Transcription request failed")?;
-        let status = response.status();
-        let body = response.text()?;
-        ensure!(
-            status.is_success(),
-            "Transcription failed ({status}): {}",
-            body.chars().take(1000).collect::<String>()
-        );
-        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
-        #[derive(Deserialize)]
-        struct Transcript {
-            text: String,
-        }
-        let result: Transcript =
-            serde_json::from_str(&body).context("Invalid response from inference runtime")?;
-        let text = result.text.trim().to_string();
-        ensure!(!text.is_empty(), "No speech recognized");
-        Ok(text)
+        result
     }
 }
 

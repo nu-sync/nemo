@@ -9,8 +9,28 @@ pub struct Config {
     pub model: PathBuf,
     pub runtime: PathBuf,
     pub idle_unload_seconds: u64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub preload_model: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub model_warmup: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub inference_threads: u32,
+    #[serde(skip_serializing_if = "is_one")]
+    pub encoder_batch_size: u32,
     pub max_recording_seconds: u64,
     pub paste: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub remove_trailing_period: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub sound_pack: crate::sounds::SoundPack,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+fn is_one(value: &u32) -> bool {
+    *value == 1
 }
 
 impl Default for Config {
@@ -20,8 +40,14 @@ impl Default for Config {
             model: crate::model::Store::managed().decoder(),
             runtime: default_runtime(),
             idle_unload_seconds: 60,
+            preload_model: false,
+            model_warmup: false,
+            inference_threads: 0,
+            encoder_batch_size: 1,
             max_recording_seconds: 120,
             paste: true,
+            remove_trailing_period: false,
+            sound_pack: crate::sounds::SoundPack::default(),
         }
     }
 }
@@ -88,6 +114,14 @@ impl Config {
             self.idle_unload_seconds > 0,
             "idle_unload_seconds must be positive"
         );
+        ensure!(
+            self.inference_threads <= 256,
+            "inference_threads must be 0–256"
+        );
+        ensure!(
+            (1..=16).contains(&self.encoder_batch_size),
+            "encoder_batch_size must be 1–16"
+        );
         Ok(())
     }
 
@@ -138,5 +172,98 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_configuration_keeps_inference_defaults() {
+        let config: Config = toml::from_str(
+            "hotkey = 'RightOption'\nmodel = '/models/decoder.gguf'\nruntime = '/runtime/nemo-speech'\nidle_unload_seconds = 60\nmax_recording_seconds = 120\npaste = true\n",
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert!(!config.remove_trailing_period);
+        assert_eq!(config.sound_pack, crate::sounds::SoundPack::HandyMarimba);
+        assert!(!config.preload_model);
+        assert!(!config.model_warmup);
+        assert_eq!(config.inference_threads, 0);
+        assert_eq!(config.encoder_batch_size, 1);
+        assert_eq!(config.idle_unload_seconds, 60);
+    }
+
+    #[test]
+    fn five_minute_performance_configuration_round_trips() {
+        let config = Config {
+            idle_unload_seconds: 300,
+            preload_model: true,
+            model_warmup: true,
+            inference_threads: 18,
+            encoder_batch_size: 4,
+            ..Config::default()
+        };
+        config.validate().unwrap();
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let restored: Config = toml::from_str(&serialized).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(toml::to_string_pretty(&restored).unwrap(), serialized);
+    }
+
+    #[test]
+    fn sound_pack_configuration_round_trips_and_rejects_unknown_packs() {
+        for (value, expected) in [
+            ("handy_marimba", crate::sounds::SoundPack::HandyMarimba),
+            ("macos_recording", crate::sounds::SoundPack::MacosRecording),
+        ] {
+            let config: Config = toml::from_str(&format!("sound_pack = '{value}'")).unwrap();
+            assert_eq!(config.sound_pack, expected);
+            let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+            assert_eq!(restored.sound_pack, expected);
+        }
+        assert!(toml::from_str::<Config>("sound_pack = 'unknown'").is_err());
+    }
+
+    #[test]
+    fn invalid_inference_tuning_is_rejected() {
+        assert!(
+            Config {
+                idle_unload_seconds: 0,
+                ..Config::default()
+            }
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("idle_unload_seconds")
+        );
+        for threads in [257, u32::MAX] {
+            let config = Config {
+                inference_threads: threads,
+                ..Config::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("inference_threads")
+            );
+        }
+        for batch_size in [0, 17, u32::MAX] {
+            let config = Config {
+                encoder_batch_size: batch_size,
+                ..Config::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("encoder_batch_size")
+            );
+        }
+        assert!(toml::from_str::<Config>("inference_threads = -1").is_err());
     }
 }

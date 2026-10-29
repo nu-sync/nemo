@@ -16,13 +16,17 @@ The menu bar dot is gray when idle, red when recording, and amber during microph
 
 Right Option toggles on release. Left Option and Option used with another key or a mouse click keep their normal behavior. This shortcut uses the same Accessibility permission required for automatic paste.
 
-Sounds: **Tink** when recording starts, **Pop** when recording stops, and **Glass** after transcription is pasted. **Basso** signals an error.
+Sounds: **Handy Marimba** plays when recording starts and stops. Choose **macOS Recording** in Settings for the Mac’s recording cues; **Play start** and **Play stop** preview the selected pack. The choice saves immediately. **Glass** plays after successful delivery, **Pop** when a recording is canceled, and **Basso** signals an error.
 
-The model unloads after 60 seconds of inactivity. **Load model** prepares it ahead of the next recording. Recording stops automatically after 120 seconds; change the limit in configuration, up to 300 seconds.
+Model loading starts in the background as soon as microphone capture begins. The model unloads after 60 seconds of inactivity by default. Use `idle_unload_seconds = 300` to retain it for five idle minutes and `preload_model = true` to load it when Nemo opens. **Load model** prepares it ahead of the next recording. Recording stops automatically after 120 seconds; change the limit in configuration, up to 300 seconds.
 
 ## Configure
 
-Use **Open configuration** in the menu, or:
+Choose **Settings…** in the menu (or run `nemo settings`) to toggle **Remove trailing period**. Changes save immediately and apply to subsequent transcription output without restarting. The option is off by default and removes only the final `.`.
+
+**Launch on startup** opens Nemo when you log in to your Mac. It uses macOS Login Items and reflects changes made in System Settings. If approval is required, enabling it opens Login Items. This setting is available when running Nemo.app.
+
+For other preferences, use **Open configuration** in the menu, or:
 
 ```sh
 ./target/release/nemo config --hotkey RightOption
@@ -35,6 +39,12 @@ hotkey = "RightOption"
 idle_unload_seconds = 60
 max_recording_seconds = 120
 paste = true
+remove_trailing_period = false
+sound_pack = "handy_marimba"
+preload_model = false
+model_warmup = false
+inference_threads = 0
+encoder_batch_size = 1
 ```
 
 `model` and `runtime` are absolute paths; the generated configuration includes both. Model weights live in `~/Library/Application Support/Nemo/models/<pinned revision>/`, independently of this checkout and app upgrades. The installed app includes the inference executable and its libraries. Explicit custom paths remain supported.
@@ -48,6 +58,8 @@ For an older checkout with downloaded weights, migrate without downloading again
 Migration verifies every SHA-256 first, publishes the managed files, and updates configuration while preserving preferences. It leaves compatibility symlinks so an already-running older app can still load its captured paths. Keep those symlinks until that app has restarted. On the same volume, migration uses hard links and needs no second copy of the weights.
 
 Combinations such as `Control+Shift+Space` are also supported as the `hotkey` value.
+
+For a latency-focused configuration on a Mac with ample unified memory, use `idle_unload_seconds = 300`. Model loading overlaps recording; `preload_model = false` and `model_warmup = false` avoid unnecessary startup work. The loaded model uses about 20 GB of resident memory. `inference_threads = 0` selects the runtime default (eight on this laptop); `encoder_batch_size` accepts 1–16. See [performance measurements and profiling](docs/performance.md) before tuning these settings.
 
 ## CLI
 
@@ -87,7 +99,7 @@ python3 scripts/verify-package.py --app dist/Nemo.app # relocated bundle and lib
 python3 scripts/verify-lifecycle.py # cancellation, single instance, idle unload, SIGTERM (quit Nemo first)
 ```
 
-The runtime and model revisions are pinned in `scripts/build-runtime.sh` and `models/manifest.json`. Python 3.9+ is used only by setup/verification scripts. `scripts/check.sh` needs no model, native runtime, microphone, or Accessibility permission. `scripts/verify.sh` creates sample speech with macOS `say`, uses an isolated data directory, and compares the actual model transcript against the spoken words. `NEMO_DATA_DIR` selects a separate absolute data directory for tests or another installation; `NEMO_RUNTIME` overrides the default runtime for fresh configurations.
+The runtime and model revisions are pinned in `scripts/build-runtime.sh` and `models/manifest.json`. Use Python 3.11+ for setup and verification scripts. `scripts/check.sh` needs no model, native runtime, microphone, or Accessibility permission. `scripts/verify.sh` creates sample speech with macOS `say`, uses an isolated data directory, and compares the actual model transcript against the spoken words. `NEMO_DATA_DIR` selects a separate absolute data directory for tests or another installation; `NEMO_RUNTIME` overrides the default runtime for fresh configurations.
 
 ### Safe upgrades
 
@@ -105,7 +117,11 @@ Then re-enable Nemo in Accessibility if macOS requires it. Use the retained back
 
 `.github/workflows/check.yml` contains the same local check command. It has **no push or pull-request trigger**. Manual dispatch is also gated on the repository variable `NEMO_ENABLE_HOSTED_CI=true`; leave it unset while Actions minutes are unavailable. Run `scripts/check.sh` locally before review. Hosted CI has not been run.
 
-Logs: `~/Library/Application Support/Nemo/daemon.log` and `inference.log`. Startup failures from Finder appear in `daemon.log`; `nemo doctor` checks paths and the input device, and distinguishes CLI permissions from those reported by the running daemon. `nemo permissions` inspects its own process without opening a microphone stream. An app launched from Finder can have different permissions than a command run from a permitted terminal.
+Logs: `~/Library/Application Support/Nemo/daemon.log` and `inference.log`. Transcription timing events in `daemon.log` report model loading, request latency, audio duration, model reuse, and success as JSON, without audio or transcript content. CLI timing events go to stderr. Startup failures from Finder appear in `daemon.log`; `nemo doctor` checks paths and the input device, and distinguishes CLI permissions from those reported by the running daemon. `nemo permissions` inspects its own process without opening a microphone stream. An app launched from Finder can have different permissions than a command run from a permitted terminal.
+
+## Verify the MacBook audio path
+
+Use the project skill [$verify-nemo](.agents/skills/verify-nemo/SKILL.md) to test the installed app with real speaker playback and microphone capture. It checks loading during recording, start → stop → transcribe, actual text delivery, and the full five-minute idle timeout. The skill includes permission checks, evidence capture, and cleanup. It requires an audible speaker output, authorized microphone access, and a controlled paste destination.
 
 ## Design
 

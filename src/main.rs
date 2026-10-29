@@ -5,7 +5,10 @@ mod control;
 mod model;
 mod output;
 mod permissions;
+mod settings;
 mod shortcut;
+mod sounds;
+mod startup;
 mod storage;
 
 use anyhow::{Context, Result};
@@ -53,6 +56,8 @@ enum Command {
     Toggle,
     /// Discard the current recording or transcription.
     Cancel,
+    /// Open the running daemon's settings.
+    Settings,
     /// Print the daemon's current state.
     Status,
     /// Load the model ahead of the next dictation.
@@ -96,12 +101,14 @@ enum ModelCommand {
 
 enum Event {
     Action(String),
+    SettingsChanged(settings::Change),
     QuitIfIdle(mpsc::Sender<bool>),
     RecordingStarted(u64, Result<audio::Recording>),
     Finished(u64, Result<Outcome>),
     WorkerUnloaded,
 }
 enum Job {
+    Prepare(Arc<AtomicBool>),
     Download(u64, Arc<AtomicBool>),
     Warm(u64, Arc<AtomicBool>),
     Transcribe(u64, Vec<u8>, Arc<AtomicBool>),
@@ -121,6 +128,7 @@ enum State {
     Recording {
         audio: audio::Recording,
         started: Instant,
+        canceled: Arc<AtomicBool>,
     },
     Working {
         id: u64,
@@ -143,6 +151,7 @@ fn execute() -> Result<()> {
         Command::Toggle => remote("toggle"),
         Command::Cancel => remote("cancel"),
         Command::Status => remote("status"),
+        Command::Settings => remote("settings"),
         Command::Warm => remote("warm"),
         Command::Quit { if_idle: false } => remote("quit"),
         Command::Quit { if_idle: true } => {
@@ -208,10 +217,12 @@ fn execute() -> Result<()> {
             let process = backend::Process::default();
             let stopping = process.clone();
             ctrlc::set_handler(move || stopping.shutdown())?;
+            let remove_trailing_period = config.remove_trailing_period;
             let mut backend = backend::Backend::new(config, process)?;
             let text = backend.transcribe(fs::read(file)?, &AtomicBool::new(false))?;
+            let text = output::format_transcript(&text, remove_trailing_period);
             if copy || paste {
-                output::deliver(&text, paste)?;
+                output::deliver(text, paste)?;
             }
             println!("{text}");
             Ok(())
@@ -292,7 +303,7 @@ fn icon(color: [u8; 3]) -> Icon {
     Icon::from_rgba(rgba, 22, 22).expect("valid icon")
 }
 
-fn run(config: Config) -> Result<()> {
+fn run(mut config: Config) -> Result<()> {
     let server = control::Server::bind()?;
     fs::create_dir_all(config::data_dir())?;
     let log = fs::OpenOptions::new()
@@ -320,6 +331,7 @@ fn run(config: Config) -> Result<()> {
     let cancel_item = MenuItem::new("Cancel", false, None);
     let warm_item = MenuItem::new("Load model", true, None);
     let download_item = MenuItem::new("Download model (21.35 GB)", true, None);
+    let settings_item = MenuItem::new("Settings…", true, None);
     let config_item = MenuItem::new("Open configuration", true, None);
     let permissions_item = MenuItem::new("Accessibility settings", true, None);
     let microphone_item = MenuItem::new("Microphone settings", true, None);
@@ -330,6 +342,7 @@ fn run(config: Config) -> Result<()> {
         &cancel_item,
         &warm_item,
         &download_item,
+        &settings_item,
         &config_item,
         &permissions_item,
         &microphone_item,
@@ -345,6 +358,7 @@ fn run(config: Config) -> Result<()> {
     let cancel_id = cancel_item.id().clone();
     let warm_id = warm_item.id().clone();
     let download_id = download_item.id().clone();
+    let settings_id = settings_item.id().clone();
     let config_id = config_item.id().clone();
     let permissions_id = permissions_item.id().clone();
     let microphone_id = microphone_item.id().clone();
@@ -359,6 +373,8 @@ fn run(config: Config) -> Result<()> {
             "warm"
         } else if event.id == download_id {
             "download"
+        } else if event.id == settings_id {
+            "settings"
         } else if event.id == config_id {
             "config"
         } else if event.id == permissions_id {
@@ -400,7 +416,7 @@ fn run(config: Config) -> Result<()> {
                         Err(_) => "unresponsive".into(),
                     }
                 }
-            } else if ["toggle", "cancel", "warm", "quit"].contains(&command) {
+            } else if ["toggle", "cancel", "warm", "settings", "quit"].contains(&command) {
                 if proxy.send_event(Event::Action(command.into())).is_ok() {
                     "accepted".into()
                 } else {
@@ -430,6 +446,13 @@ fn run(config: Config) -> Result<()> {
             match received {
                 Ok(job) => {
                     let (id, result) = match job {
+                        Job::Prepare(canceled) => {
+                            if let Err(error) = backend.ready(&canceled) {
+                                eprintln!("Model preparation failed: {error:#}");
+                                backend.unload();
+                            }
+                            continue;
+                        }
                         Job::Warm(id, canceled) => {
                             (id, backend.ready(&canceled).map(|_| Outcome::ModelLoaded))
                         }
@@ -464,6 +487,11 @@ fn run(config: Config) -> Result<()> {
         }
     });
 
+    let proxy = event_loop.create_proxy();
+    let settings = settings::Settings::new(&event_loop, &config, move |change| {
+        let _ = proxy.send_event(Event::SettingsChanged(change));
+    })?;
+    let sounds = sounds::Player::new()?;
     let mut state = State::Idle;
     let recording_proxy = event_loop.create_proxy();
     let mut next_id = 0;
@@ -500,9 +528,15 @@ fn run(config: Config) -> Result<()> {
 
     let mut next_permissions_check = Instant::now();
     let mut last_permissions = None;
+    if config.preload_model && config.check_assets().is_ok() {
+        let _ = event_loop
+            .create_proxy()
+            .send_event(Event::Action("warm".into()));
+    }
     event_loop.run(move |event, _, flow| {
         let _keep_alive = (&server, &hotkeys);
         if Instant::now() >= next_permissions_check {
+            if settings.window.is_visible() { settings.refresh_startup(); }
             let observed = permissions::Snapshot::current();
             let changed = last_permissions.replace(observed) != Some(observed);
             let permissions = observed;
@@ -528,14 +562,53 @@ fn run(config: Config) -> Result<()> {
                 if idle { process.shutdown(); *flow = ControlFlow::Exit; return; }
                 None
             }
+            TaoEvent::WindowEvent { window_id, event: tao::event::WindowEvent::CloseRequested, .. } if window_id == settings.window.id() => {
+                settings.window.set_visible(false);
+                None
+            }
+            TaoEvent::UserEvent(Event::SettingsChanged(settings::Change::RemoveTrailingPeriod(enabled))) => {
+                match Config::update(|saved| { saved.remove_trailing_period = enabled; Ok(()) }) {
+                    Ok(_) => { config.remove_trailing_period = enabled; settings.set_error(""); }
+                    Err(error) => {
+                        settings.set_remove_trailing_period(config.remove_trailing_period);
+                        settings.set_error("Could not save settings.");
+                        eprintln!("Cannot save settings: {error:#}");
+                    }
+                }
+                None
+            }
+            TaoEvent::UserEvent(Event::SettingsChanged(settings::Change::LaunchOnStartup(enabled))) => {
+                match startup::set_enabled(enabled) {
+                    Ok(()) => settings.set_error(""),
+                    Err(error) => { settings.set_error("Could not change launch on startup."); eprintln!("Cannot change launch on startup: {error:#}"); }
+                }
+                settings.refresh_startup();
+                None
+            }
+            TaoEvent::UserEvent(Event::SettingsChanged(settings::Change::SoundPack(pack))) => {
+                match Config::update(|saved| { saved.sound_pack = pack; Ok(()) }) {
+                    Ok(_) => { config.sound_pack = pack; settings.set_error(""); }
+                    Err(error) => {
+                        settings.set_sound_pack(config.sound_pack);
+                        settings.set_error("Could not save sound pack.");
+                        eprintln!("Cannot save sound pack: {error:#}");
+                    }
+                }
+                None
+            }
+            TaoEvent::UserEvent(Event::SettingsChanged(settings::Change::PreviewSound(cue))) => {
+                sounds.play(config.sound_pack, cue);
+                None
+            }
             TaoEvent::UserEvent(Event::Action(action)) => Some(action),
             TaoEvent::UserEvent(Event::RecordingStarted(id, result)) => {
                 if let State::Starting { id: current, canceled } = &state && *current == id {
+                    let canceled = canceled.clone();
                     let was_canceled = canceled.load(Ordering::Acquire);
                     state = State::Idle;
                     if was_canceled { set_status("Canceled", [160,160,160]); }
                     else { match result {
-                        Ok(audio) => { state = State::Recording { audio, started: Instant::now() }; set_status("Recording", [230,55,55]); output::sound("Tink"); }
+                        Ok(audio) => { let canceled = canceled.clone(); state = State::Recording { audio, started: Instant::now(), canceled: canceled.clone() }; let _ = jobs.send(Job::Prepare(canceled)); set_status("Recording", [230,55,55]); sounds.play(config.sound_pack, sounds::Cue::Start); }
                         Err(error) => { state = State::Idle; set_status(&format!("{error:#}"), [230,80,60]); output::sound("Basso"); }
                     }}
                 }
@@ -550,7 +623,7 @@ fn run(config: Config) -> Result<()> {
                     state = State::Idle;
                     if was_canceled { set_status("Canceled", [160,160,160]); }
                     else { match result {
-                        Ok(Outcome::Transcript(text)) => match output::deliver(&text, config.paste) {
+                        Ok(Outcome::Transcript(text)) => match output::deliver(output::format_transcript(&text, config.remove_trailing_period), config.paste) {
                             Ok(()) => { set_status("Ready", [160,160,160]); output::sound("Glass"); }
                             Err(error) => { set_status(&format!("{error:#}"), [230,80,60]); output::sound("Basso"); }
                         },
@@ -573,17 +646,18 @@ fn run(config: Config) -> Result<()> {
         let Some(action) = action else { return; };
         match action.as_str() {
             "quit" => {
-                if let State::Working { canceled, .. } | State::Starting { canceled, .. } = &state { canceled.store(true, Ordering::Release); }
+                if let State::Working { canceled, .. } | State::Starting { canceled, .. } | State::Recording { canceled, .. } = &state { canceled.store(true, Ordering::Release); }
                 process.shutdown();
                 *flow = ControlFlow::Exit;
             }
+            "settings" => { settings.show(); }
             "config" => { if !config::path().exists() { let _ = config.save(); } let _ = std::process::Command::new("/usr/bin/open").arg("-e").arg(config::path()).spawn(); }
             "permissions" => { let _ = std::process::Command::new("/usr/bin/open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility").spawn(); }
             "microphone" => { let _ = std::process::Command::new("/usr/bin/open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone").spawn(); }
             "cancel" => {
                 match &state {
                     State::Working { canceled, .. } => { canceled.store(true, Ordering::Release); process.stop(); set_status("Canceling", [160,160,160]); }
-                    State::Recording { .. } => { state = State::Idle; output::sound("Pop"); set_status("Canceled", [160,160,160]); }
+                    State::Recording { canceled, .. } => { canceled.store(true, Ordering::Release); state = State::Idle; output::sound("Pop"); set_status("Canceled", [160,160,160]); }
                     State::Starting { canceled, .. } => { canceled.store(true, Ordering::Release); set_status("Canceling microphone request", [160,160,160]); }
                     State::Idle => {}
                 }
@@ -623,18 +697,17 @@ fn run(config: Config) -> Result<()> {
                             let _ = proxy.send_event(Event::RecordingStarted(id, result));
                         });
                     },
-                    State::Recording { audio, .. } => {
+                    State::Recording { audio, canceled, .. } => {
                         let recording = audio.finish();
-                        output::sound("Pop");
+                        sounds.play(config.sound_pack, sounds::Cue::Stop);
                         match recording {
                         Ok(wav) => {
                             next_id += 1;
-                            let canceled = Arc::new(AtomicBool::new(false));
                             let _ = jobs.send(Job::Transcribe(next_id, wav, canceled.clone()));
                             state = State::Working { id: next_id, canceled };
                             set_status("Transcribing", [230,170,30]);
                         }
-                        Err(error) => { set_status(&format!("{error:#}"), [230,80,60]); output::sound("Basso"); }
+                        Err(error) => { canceled.store(true, Ordering::Release); set_status(&format!("{error:#}"), [230,80,60]); output::sound("Basso"); }
                         }
                     },
                     State::Working { .. } | State::Starting { .. } => unreachable!(),

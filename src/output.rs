@@ -92,3 +92,35 @@ pub fn sound(name: &str) {
         });
     }
 }
+
+pub fn format_transcript(text: &str, remove_trailing_period: bool) -> &str {
+    if remove_trailing_period {
+        text.strip_suffix('.').unwrap_or(text)
+    } else {
+        text
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_transcript;
+
+    #[test]
+    fn removes_only_the_final_period_when_enabled() {
+        for (text, expected) in [
+            ("Hello world.", "Hello world"),
+            (
+                "First sentence. Second sentence.",
+                "First sentence. Second sentence",
+            ),
+            ("Version 1.2.", "Version 1.2"),
+            ("Hello world", "Hello world"),
+            ("Really?", "Really?"),
+            ("Hello!", "Hello!"),
+            ("", ""),
+        ] {
+            assert_eq!(format_transcript(text, true), expected);
+            assert_eq!(format_transcript(text, false), text);
+        }
+    }
+}

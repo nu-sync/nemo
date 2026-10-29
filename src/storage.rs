@@ -10,7 +10,7 @@ use std::{
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 pub struct Lock {
-    _file: File,
+    file: File,
 }
 
 impl Lock {
@@ -28,7 +28,13 @@ impl Lock {
             "Another operation is using {}. Try again when it finishes",
             path.display()
         );
-        Ok(Self { _file: file })
+        Ok(Self { file })
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 
@@ -71,5 +77,33 @@ mod tests {
         assert!(Lock::acquire(&path).is_err());
         drop(lock);
         assert!(Lock::acquire(&path).is_ok());
+    }
+
+    #[test]
+    fn dropping_a_lock_releases_it_while_a_child_retains_the_descriptor() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("inherited.lock");
+        let lock = Lock::acquire(&path).unwrap();
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            loop {
+                unsafe { libc::pause() };
+            }
+        }
+        drop(lock);
+        let reacquired = Lock::acquire(&path);
+        let killed = unsafe { libc::kill(child, libc::SIGKILL) };
+        let waited = loop {
+            let waited = unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) };
+            if waited >= 0
+                || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                break waited;
+            }
+        };
+        assert_eq!(killed, 0);
+        assert_eq!(waited, child);
+        assert!(reacquired.is_ok(), "{:?}", reacquired.err());
     }
 }

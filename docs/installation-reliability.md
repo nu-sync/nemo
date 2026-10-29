@@ -1,15 +1,16 @@
 # Installation reliability checkpoint — October 28, 2026
 
-The installation candidate is ready for review. The installed app was not replaced or restarted. Nothing was pushed, published, or dispatched to GitHub Actions.
+This historical checkpoint records the initial installation-only candidate before the combined performance/settings update. The installed app was not replaced or restarted at that checkpoint, and nothing was pushed, published, or dispatched to GitHub Actions. See [combined installation verification](combined-install-verification.md) for the later installed app's status.
 
 ## Local Git checkpoint
 
-At the user's request, the installation work is being saved as the repository's initial local commit. The overlapping profiling edits remain in the working tree, uncommitted. A separate source snapshot excludes those edits and passed 20 unit tests, 5 CLI tests, and 11 installer tests, plus formatting and Clippy. The earlier candidate and measurements below included the parallel performance configuration; it remains staged separately and has not been reinstalled. The local checkpoint uses only source, licenses, model metadata, and verification scripts; weights, recordings, app bundles, and build outputs are excluded.
+At the user's request, the installation work was saved as the repository's initial local commit. Overlapping profiling edits were excluded from that commit. A separate source snapshot excluded those edits and passed 20 unit tests, 5 CLI tests, and 11 installer tests, plus formatting and Clippy. The earlier candidate and measurements below included the parallel performance configuration; that candidate had not been reinstalled at this checkpoint. The local checkpoint used only source, licenses, model metadata, and verification scripts; weights, recordings, app bundles, and build outputs were excluded.
 
 ## Changes
 
 - Managed, revision-specific model storage under `~/Library/Application Support/Nemo/models/`. Defaults no longer embed the checkout path. Downloads resume into partial files, validate pinned sizes and SHA-256 values, then publish by rename. A shared lock prevents overlapping downloads and migrations.
 - Verified migration of both existing weights, totaling 21,349,066,752 bytes, to revision `59c519158371694388490c96741724a70c8c6276`. Compatibility symlinks keep the old running app's captured paths usable. The configuration's model path changed; Right Option and other existing preferences were retained.
+- Default-only performance options are omitted when saving configuration so routine shortcut/model changes remain readable by the installed older app. Explicitly enabling newer options can still require removing them before rolling back to a version that does not recognize them.
 - Permission preflight uses explicit microphone states. Missing Accessibility no longer prevents the menu bar app from starting. The daemon observes permission changes every two seconds, registers or removes Right Option accordingly, blocks denied microphone capture, and provides links to both settings pages. Diagnostics distinguish the command process from the daemon.
 - Packaging stages a separately verified, versioned bundle. Installation stages before stopping, requires explicit review when the code identity changes, asks the daemon to quit only if idle, retains a previous bundle, and rolls back on replacement, verification, or launch-command failure. Older daemons without safe-quit support must be quit manually before upgrading.
 - Local checks run without model weights or the native runtime. The future Actions workflow has only manual dispatch and requires `NEMO_ENABLE_HOSTED_CI=true`. Leaving that variable unset prevents hosted execution even if someone dispatches it manually.

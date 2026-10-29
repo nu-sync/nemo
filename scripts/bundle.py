@@ -91,6 +91,7 @@ with (contents / 'Info.plist').open('wb') as plist_file:
 licenses = contents / 'Resources/licenses'
 licenses.mkdir(exist_ok=True)
 shutil.copy2(root / 'LICENSE', licenses / 'Nemo-MIT.txt')
+shutil.copy2(root / 'assets/sounds/Handy-MIT.txt', licenses / 'Handy-MIT.txt')
 if (root / 'models/LICENSE').is_file():
     shutil.copy2(root / 'models/LICENSE', licenses / 'Model-OpenMDW-1.1.txt')
 for name in ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md']:

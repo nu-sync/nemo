@@ -46,7 +46,7 @@ def designated_requirement(app):
 
 def same_identity(existing, candidate):
     for app, requirement in [(candidate, designated_requirement(existing)), (existing, designated_requirement(candidate))]:
-        result = subprocess.run(['/usr/bin/codesign', '--verify', '--strict', '-R', requirement, str(app)], capture_output=True)
+        result = subprocess.run(['/usr/bin/codesign', '--verify', '--strict', '-R', '=' + requirement, str(app)], capture_output=True)
         if result.returncode:
             return False
     return True

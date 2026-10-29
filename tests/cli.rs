@@ -26,6 +26,7 @@ fn fresh_configuration_works_outside_the_checkout() {
     let model = std::path::PathBuf::from(config["model"].as_str().unwrap());
     assert!(model.starts_with(root.path().join("data/models")));
     assert!(!config["runtime"].as_str().unwrap().contains("vendor"));
+    assert!(config.get("remove_trailing_period").is_none());
     let path = cli(root.path(), &["model", "path"]);
     assert_eq!(
         String::from_utf8(path.stdout).unwrap().trim(),
@@ -38,7 +39,7 @@ fn updating_a_shortcut_preserves_existing_model_and_preferences() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir(root.path().join("data")).unwrap();
     let config_path = root.path().join("data/config.toml");
-    fs::write(&config_path, "hotkey = 'Control+Shift+Space'\nmodel = '/custom/model.gguf'\nruntime = '/custom/nemo-speech'\nidle_unload_seconds = 17\nmax_recording_seconds = 42\npaste = false\n").unwrap();
+    fs::write(&config_path, "hotkey = 'Control+Shift+Space'\nmodel = '/custom/model.gguf'\nruntime = '/custom/nemo-speech'\nidle_unload_seconds = 17\nmax_recording_seconds = 42\npaste = false\nremove_trailing_period = true\nsound_pack = 'macos_recording'\n").unwrap();
     let output = cli(root.path(), &["config", "--hotkey", "RightOption"]);
     assert!(output.status.success());
     let config: toml::Value = toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
@@ -46,6 +47,8 @@ fn updating_a_shortcut_preserves_existing_model_and_preferences() {
     assert_eq!(config["model"].as_str(), Some("/custom/model.gguf"));
     assert_eq!(config["idle_unload_seconds"].as_integer(), Some(17));
     assert_eq!(config["paste"].as_bool(), Some(false));
+    assert_eq!(config["remove_trailing_period"].as_bool(), Some(true));
+    assert_eq!(config["sound_pack"].as_str(), Some("macos_recording"));
     for optional in [
         "preload_model",
         "model_warmup",
