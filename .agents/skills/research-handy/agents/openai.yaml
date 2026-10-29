@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Handy"
+  short_description: "Find Handy features and trace their implementation"
+  default_prompt: "Use $research-handy to find a Handy feature in its official docs, trace its GitHub implementation, and explain how it could fit Nemo."
