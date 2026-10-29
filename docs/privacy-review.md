@@ -45,8 +45,8 @@ The clean-source validation used archive SHA-256 `5cb1c65f58cf23d1535b260596525f
 - Strict/deep verification of that app's code signature and a second identical installation that reused it.
 - No model download, app launch, microphone capture, clipboard operation, or speaker playback during this release validation.
 
-The final documentation records these results; the tested Rust implementation did not change afterward. Redacted logs, source inventory, archive digest, and source-install results are retained locally under ignored `artifacts/privacy-review/`. The repository remains private until the owner changes its visibility. The pushed commit is reported separately so this document does not embed its own commit ID.
+The final documentation records these results; the tested Rust implementation did not change afterward. Redacted logs, source inventory, archive digest, and source-install results are retained locally under ignored `artifacts/privacy-review/`. The owner authorized publication on October 29, 2026. GitHub confirmed the repository is public and private vulnerability reporting is enabled. The pushed commit is reported separately so this document does not embed its own commit ID.
 
-GitHub's private-vulnerability-reporting endpoint returned unavailable while the repository was private. GitHub documents this feature for public repositories. Enable and verify it immediately after the visibility change and before announcing the source release; the contribution guide explains how to avoid public disclosure if the form is unavailable.
+GitHub's private-vulnerability-reporting endpoint was unavailable during the private-source review. Immediately after publication, reporting was enabled and verified through the settings API. Vulnerabilities can now be submitted through the [private reporting form](https://github.com/nu-sync/nemo/security/advisories/new).
 
 Downloadable-app distribution remains separate: no notarization, public binary upload, or new acoustic test was performed for this source review. See the [release checklist](releasing.md).

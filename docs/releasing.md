@@ -67,7 +67,7 @@ See the [privacy review](privacy-review.md) for the examined history, current so
 - [x] Keep hosted CI manual and opt-in; pushing this change will not automatically consume hosted minutes.
 - [x] Inspect the clean source archive and Cargo file list; pass workspace checks and isolated clean-source installation, as recorded in the privacy review.
 - Commit and push the reviewed tree, then compare the local commit with `origin/main` before changing visibility.
-- [ ] Owner changes repository visibility when ready. This workflow leaves it private.
-- [ ] Immediately after the visibility change, enable and verify private vulnerability reporting before announcing the public source release.
+- [x] Owner authorized the visibility change; `nu-sync/nemo` is public as of October 29, 2026.
+- [x] Enable private vulnerability reporting immediately after the visibility change; GitHub's settings API confirmed `enabled: true` on October 29, 2026. Report privately through the [security reporting form](https://github.com/nu-sync/nemo/security/advisories/new).
 
 The source release does not include a prebuilt app or model weights. Developer ID signing, notarization, Rust/native dependency notice completion for a shipped binary, Gatekeeper validation, and final real-audio checks remain gates for a future downloadable-app release. Publishing to crates.io is also a separate decision and requires validating its packaged path dependencies and source contents.
