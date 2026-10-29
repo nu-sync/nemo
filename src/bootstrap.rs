@@ -1,11 +1,11 @@
 use crate::{config, control, storage};
 use anyhow::{Context, Result, bail, ensure};
+use nemo_build::{install::verify as verify_app, sha256};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
-    fs::{self, File},
-    io::Read,
+    fs,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -17,14 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BUILD_SCRIPT: &[u8] = include_bytes!("../scripts/build-runtime.sh");
+const CACHE_RECIPE: &str = "metal-server-asr-v1";
 const PAYLOAD: &[(&str, &[u8])] = &[
-    ("scripts/build-runtime.sh", BUILD_SCRIPT),
-    ("scripts/bundle.py", include_bytes!("../scripts/bundle.py")),
-    (
-        "scripts/install_app.py",
-        include_bytes!("../scripts/install_app.py"),
-    ),
     (
         "scripts/entitlements.plist",
         include_bytes!("../scripts/entitlements.plist"),
@@ -75,7 +69,10 @@ impl Paths {
             "NEMO_APP_PATH must be an absolute path ending in .app"
         );
         ensure!(!app.is_symlink(), "The app destination cannot be a symlink");
-        let build = format!("{:x}", Sha256::digest(BUILD_SCRIPT));
+        let build = format!(
+            "{:x}",
+            Sha256::digest(format!("{}:{CACHE_RECIPE}", nemo_build::native::REVISION))
+        );
         let cache = data.join("runtime-builds").join(&build[..16]);
         Ok(Self { data, app, cache })
     }
@@ -100,48 +97,6 @@ fn receipt_matches(bytes: &[u8], source_sha256: &str) -> bool {
     serde_json::from_slice::<Receipt>(bytes).is_ok_and(|receipt| {
         receipt.source_sha256 == source_sha256 && receipt.version == env!("CARGO_PKG_VERSION")
     })
-}
-
-fn sha256(path: &Path) -> Result<String> {
-    let mut file = File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut bytes = [0; 64 * 1024];
-    loop {
-        let count = file.read(&mut bytes)?;
-        if count == 0 {
-            return Ok(format!("{:x}", digest.finalize()));
-        }
-        digest.update(&bytes[..count]);
-    }
-}
-
-fn output(command: &mut Command) -> Result<String> {
-    let result = command.stdin(Stdio::null()).output()?;
-    ensure!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr).trim()
-    );
-    Ok(String::from_utf8(result.stdout)?)
-}
-
-fn verify_app(app: &Path) -> Result<()> {
-    let identifier = output(
-        Command::new("/usr/libexec/PlistBuddy")
-            .args(["-c", "Print :CFBundleIdentifier"])
-            .arg(app.join("Contents/Info.plist")),
-    )?;
-    ensure!(
-        identifier.trim() == "computer.nemo.dictate",
-        "Refusing an unrelated application: {}",
-        app.display()
-    );
-    output(
-        Command::new("/usr/bin/codesign")
-            .args(["--verify", "--deep", "--strict"])
-            .arg(app),
-    )?;
-    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -223,88 +178,6 @@ impl Drop for Running<'_> {
     }
 }
 
-fn prepare_tools(runner: &Runner) -> Result<PathBuf> {
-    ensure!(
-        cfg!(target_os = "macos") && cfg!(target_arch = "aarch64"),
-        "Nemo requires an Apple Silicon Mac"
-    );
-    let version = output(Command::new("/usr/bin/sw_vers").arg("-productVersion"))?;
-    ensure!(
-        version
-            .trim()
-            .split('.')
-            .next()
-            .and_then(|n| n.parse::<u32>().ok())
-            .is_some_and(|major| major >= 26),
-        "Nemo requires macOS 26 or newer"
-    );
-    output(Command::new("/usr/bin/xcode-select").arg("-p")).context(
-        "Install Xcode Command Line Tools with xcode-select --install, then run nemo again",
-    )?;
-    let brew = [
-        PathBuf::from("brew"),
-        PathBuf::from("/opt/homebrew/bin/brew"),
-    ]
-    .into_iter()
-    .find(|path| output(Command::new(path).arg("--prefix")).is_ok())
-    .context("Install Homebrew from https://brew.sh, then run nemo again")?;
-    let prefix = PathBuf::from(output(Command::new(&brew).arg("--prefix"))?.trim());
-    let missing: Vec<_> = ["cmake", "ninja", "sentencepiece", "abseil"]
-        .into_iter()
-        .filter(|formula| {
-            Command::new(&brew)
-                .args(["list", "--versions", formula])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_or(true, |status| !status.success())
-        })
-        .collect();
-    if !missing.is_empty() {
-        eprintln!(
-            "Installing build tools with Homebrew: {}",
-            missing.join(", ")
-        );
-        runner.run(
-            Command::new(&brew)
-                .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-                .arg("install")
-                .args(&missing),
-            "Homebrew build dependency installation",
-        )?;
-    }
-    let python = [
-        PathBuf::from("python3"),
-        prefix.join("bin/python3"),
-        PathBuf::from("/usr/bin/python3"),
-    ];
-    if let Some(path) = python.iter().find(|path| usable_python(path)) {
-        return Ok(path.clone());
-    }
-    eprintln!("Installing Python for one-time app setup");
-    runner.run(
-        Command::new(&brew)
-            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-            .args(["install", "python"]),
-        "Python installation",
-    )?;
-    python
-        .into_iter()
-        .find(|path| usable_python(path))
-        .context("Python 3.9 or newer is required for app setup")
-}
-
-fn usable_python(path: &Path) -> bool {
-    Command::new(path)
-        .args(["-c", "import sys; sys.exit(sys.version_info < (3, 9))"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 fn write_payload(root: &Path) -> Result<()> {
     for (name, bytes) in PAYLOAD {
         storage::atomic_write(&root.join(name), bytes)?;
@@ -346,49 +219,52 @@ impl Setup {
             }
         }
         eprintln!("Preparing Nemo.app. The native speech runtime is built once and cached.");
-        let python = prepare_tools(&self.runner)?;
         write_payload(&self.paths.cache)?;
-        self.runner.run(
-            Command::new("/bin/bash").arg(self.paths.cache.join("scripts/build-runtime.sh")),
-            "native speech runtime build",
-        )?;
-        let candidate = self.paths.cache.join("candidate/Nemo.app");
-        eprintln!("Packaging Nemo.app");
-        self.runner.run(
-            Command::new(&python)
-                .arg(self.paths.cache.join("scripts/bundle.py"))
-                .arg("--binary")
-                .arg(&executable)
-                .arg("--native-dir")
-                .arg(
-                    self.paths
-                        .cache
-                        .join("vendor/NeMo-Speech.cpp/build/metal-server/bin"),
-                )
-                .arg("--version")
-                .arg(env!("CARGO_PKG_VERSION"))
-                .arg("--output")
-                .arg(&candidate),
-            "app packaging",
-        )?;
-        let mut installer = Command::new(python);
-        installer
-            .arg(self.paths.cache.join("scripts/install_app.py"))
-            .arg("--source")
-            .arg(candidate)
+        let mut prepare = Command::new(&executable);
+        prepare
+            .arg("prepare-app")
+            .arg("--root")
+            .arg(&self.paths.cache)
+            .arg("--binary")
+            .arg(&executable)
             .arg("--destination")
-            .arg(&self.paths.app)
-            .arg("--no-launch");
+            .arg(&self.paths.app);
         if allow_permission_reset {
-            installer.arg("--allow-permission-reset");
+            prepare.arg("--allow-permission-reset");
         }
-        self.runner
-            .run(&mut installer, "app installation")
-            .context(
-                "For an approved code-identity change, use nemo install --allow-permission-reset",
-            )?;
+        self.runner.run(&mut prepare, "native app preparation")?;
         Ok(self.paths.app.clone())
     }
+}
+
+pub fn prepare(
+    root: PathBuf,
+    binary: PathBuf,
+    destination: PathBuf,
+    allow_permission_reset: bool,
+) -> Result<()> {
+    nemo_build::native::prepare_tools()?;
+    let native_dir = nemo_build::native::build(&root)?;
+    let sign_identity = match std::env::var("NEMO_SIGN_IDENTITY") {
+        Ok(identity) => Some(identity),
+        Err(_) => nemo_build::package::signing_identity(&destination)?,
+    };
+    let output = root.join("candidate/Nemo.app");
+    nemo_build::package::build(&nemo_build::package::Options {
+        root,
+        binary,
+        native_dir,
+        output: output.clone(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        sign_identity,
+    })?;
+    nemo_build::install::install(&nemo_build::install::Options {
+        source: output,
+        destination,
+        allow_permission_reset,
+        launch: false,
+    })?;
+    Ok(())
 }
 
 pub fn install(allow_permission_reset: bool) -> Result<PathBuf> {

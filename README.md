@@ -31,12 +31,14 @@ Wait for the model download to finish, then:
 
 1. Enable **Nemo** in **System Settings → Privacy & Security → Accessibility**. This enables right Option and automatic paste.
 2. Click where you want the text to go.
-3. Tap **right Option**. Allow **Microphone** access when prompted. Speak when the menu bar dot turns red.
-4. Tap **right Option** again. Nemo transcribes, copies, and pastes your words.
+3. Tap **right Option**. Allow **Microphone** access when prompted. Speak when **Recording** appears at the bottom of the screen.
+4. Tap **right Option** again. The indicator changes to **Transcribing**, then disappears when Nemo finishes copying and pasting your words.
 
 Keep the destination app focused until paste finishes. **Cancel** in Nemo’s menu discards the current operation. **Quit** closes Nemo and releases the model.
 
 The menu bar dot is gray when idle, red when recording, and amber during setup or transcription. Left Option and Option used with another key keep their normal behavior.
+
+The indicator appears above the Dock on the display containing your pointer. It lets clicks pass through and keeps your destination app focused.
 
 ## Settings
 
@@ -93,7 +95,16 @@ nemo status
 
 ## Development
 
-See [development and advanced configuration](docs/development.md) for source builds, CLI commands, packaging, tests, and the application design. The project’s [verify-nemo skill](.agents/skills/verify-nemo/SKILL.md) exercises real speaker playback, microphone capture, transcription, paste, and idle unloading.
+Build and install the current checkout with Rust:
+
+```sh
+cargo xtask check
+cargo xtask install
+```
+
+The update command retains the previous app and refuses to interrupt dictation. Python and Bash are not required for building or installing Nemo.
+
+See [development and advanced configuration](docs/development.md) for source builds, CLI commands, packaging, tests, and the application design. See [contributing](CONTRIBUTING.md) and [release preparation](docs/releasing.md) for development and publication requirements. The project’s [verify-nemo skill](.agents/skills/verify-nemo/SKILL.md) exercises real speaker playback, microphone capture, transcription, paste, and idle unloading.
 
 ## Licenses
 

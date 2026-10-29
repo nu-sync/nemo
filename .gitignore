@@ -6,3 +6,12 @@
 /.DS_Store
 /artifacts/
 __pycache__/
+
+# Local credentials and signing material
+.env
+.env.*
+*.p12
+*.pfx
+*.key
+*.pem
+*.mobileprovision

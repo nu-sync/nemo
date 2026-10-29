@@ -6,7 +6,7 @@ For installation and everyday dictation, start with the [README](../README.md). 
 
 The Cargo-installed `nemo` command prepares and opens a real `Nemo.app`. The app runs the dictation daemon; it starts a resumable download when the managed model is missing. Explicit commands such as `nemo status`, `nemo config`, and `nemo model verify` do not trigger installation. `nemo run` starts a daemon directly for development and isolated lifecycle tests.
 
-First setup uses the pinned native build script and the existing Python standard-library packager and installer. It installs missing build dependencies with Homebrew; Python is used for setup, with no virtual environment or pip packages. The scripts, model manifest, and licenses are embedded in the Cargo binary, so the source checkout is not needed afterward. Native sources and build output are cached under `~/Library/Application Support/Nemo/runtime-builds/`.
+First setup uses the shared Rust build, packaging, and installation code in `crates/nemo-build`. It installs missing native build dependencies with Homebrew. The model manifest and licenses are embedded in the Cargo binary, so the source checkout is not needed afterward. Python and Bash are not required for setup or local builds. Native sources and build output are cached under `~/Library/Application Support/Nemo/runtime-builds/`.
 
 A signed receipt records the original Cargo executable's SHA-256. Re-running the same command verifies and reuses the installed app. An update keeps the installer's busy-app refusal, signing-identity check, backup, and rollback behavior. `nemo install` prepares the app without launching it; bare `nemo` handles the launch and checks the responding daemon's executable identity.
 
@@ -15,7 +15,7 @@ A signed receipt records the original Cargo executable's SHA-256. Re-running the
 | `NEMO_DATA_DIR` | Absolute directory for configuration, models, logs, and build cache. |
 | `NEMO_APP_PATH` | Absolute destination ending in `.app`; defaults to `~/Applications/Nemo.app`. |
 | `NEMO_RUNTIME` | Override the inference executable when generating default configuration. |
-| `NEMO_SIGN_IDENTITY` | Signing identity for packaging; defaults to ad hoc signing. |
+| `NEMO_SIGN_IDENTITY` | Explicit signing identity for packaging. Reuse the installed signing identity for local updates; a first unsigned build uses ad hoc signing. |
 
 For an isolated bootstrap test, set **both** `NEMO_DATA_DIR` and `NEMO_APP_PATH`. Changing only the data directory still uses the normal app destination. The launcher and installer forward data/runtime overrides when opening or restoring the app.
 
@@ -99,35 +99,49 @@ For a latency-focused configuration on a Mac with ample unified memory, use `idl
 Requires Apple Silicon, macOS 26+, Rust, Homebrew, and Xcode Command Line Tools. The two model files total **21.35 GB**. The loaded model used about **20 GB of memory** in the M5 Max measurements; leave additional room for build outputs and other applications. This is currently macOS-only.
 
 ```sh
-scripts/setup.sh          # install build dependencies, build, download, verify hashes, install
-open "$HOME/Applications/Nemo.app"
-scripts/download-model.sh # resume model downloads and verify SHA-256
-scripts/build-runtime.sh # rebuild the pinned Metal runtime
-scripts/package.sh       # build dist/Nemo.app without changing the installed app
-scripts/install.sh       # stage, verify, and install; retain the previous app
-scripts/check.sh         # local CI: formatting, Clippy, Rust and installer tests
-scripts/verify.sh        # static checks, tests, actual synthetic-speech transcription
-python3 scripts/verify-package.py --app dist/Nemo.app # relocated bundle and library checks
-python3 scripts/verify-lifecycle.py # cancellation, single instance, idle unload, SIGTERM (quit Nemo first)
+cargo xtask check          # formatting, Clippy, workspace tests; no microphone or model
+cargo xtask build          # build the release nemo executable
+cargo xtask runtime        # build the pinned native Metal runtime
+cargo xtask package        # create dist/Nemo.app
+cargo xtask install        # build, package, safely install, and confirm the running build
+cargo xtask setup          # prepare native dependencies, model, and app
+cargo xtask download-model # resume model downloads and verify hashes
+cargo xtask release-check  # inspect release inputs without publishing
+cargo xtask privacy-check --gitleaks /path/to/gitleaks # optional source/history review
+cargo xtask verify         # explicit model test using speech generated to a file
 ```
 
-The runtime and model revisions are pinned in `scripts/build-runtime.sh` and `models/manifest.json`. Use Python 3.11+ for setup and verification scripts. `scripts/check.sh` needs no model, native runtime, microphone, or Accessibility permission. `scripts/verify.sh` creates sample speech with macOS `say`, uses an isolated data directory, and compares the actual model transcript against the spoken words. `NEMO_DATA_DIR` selects a separate absolute data directory for tests or another installation; `NEMO_RUNTIME` overrides the default runtime for fresh configurations.
+`xtask` is a workspace member. The `.cargo/config.toml` alias runs it through Cargo; no separately installed task runner is needed. `crates/nemo-build` owns the native builder, packager, and installer shared by `xtask` and the Cargo bootstrap. The root package remains `nemo-dictate`, and Cargo shares the workspace lockfile and build directory.
+
+The runtime revision is pinned in `crates/nemo-build/src/native.rs`; model revisions and hashes are in `models/manifest.json`. `cargo xtask check` needs no model, native runtime, microphone, or Accessibility permission. `NEMO_DATA_DIR` selects a separate absolute data directory for tests or another installation; `NEMO_RUNTIME` overrides the default runtime for fresh configurations.
+
+Python 3.11+ is only needed for the optional diagnostics under `scripts/`, such as `verify-package.py`, `verify-lifecycle.py`, benchmarks, and the installed-audio verification helper. These helpers do not participate in the Rust build or installation path. `cargo xtask verify` needs the native runtime and model; it generates speech to a file and transcribes it without speaker playback or microphone capture. Live dictation checks require explicit authorization when speaker playback or microphone use would be disruptive.
+
+See [release preparation](releasing.md) for source publication and signed app distribution. The dated verification documents record earlier implementations and test runs; their old commands are historical evidence, not current setup instructions.
+
+### Silent indicator preview
+
+```sh
+cargo run --locked -- preview-indicator --output artifacts/indicator-preview
+```
+
+This previews Recording → Transcribing → hidden using the same native panel as dictation, saves PNGs of both visible states, and checks panel visibility, labels, click-through behavior, and foreground-app preservation. It exits automatically without starting the daemon, opening the microphone, playing sounds, loading a model, or changing configuration. Omit `--output` to preview without saving images. Use this check when an audible dictation test would be disruptive; it does not verify the microphone, shortcut, transcription, or paste path.
 
 ### Safe upgrades
 
 The installer copies and verifies the candidate before stopping an idle app, rejects upgrades during recording/transcription/downloads, retains the previous bundle in `~/Applications/.Nemo.backups/`, and restores it if replacement, signature verification, or launch fails. The daemon checks the safe-quit request on its event loop so a newly started recording cannot race the installer. An idle running app is reopened after a successful upgrade. Quit older versions that lack safe-quit support manually before installing. The configuration and model directory are retained.
 
-Local builds use ad hoc signatures. A rebuilt app can change its macOS permission identity, so the installer refuses that upgrade by default. After reviewing the candidate, explicitly allow a permission reset if needed:
+Use the same signing identity for successive local builds. An ad hoc rebuild can change its macOS permission identity, so the installer refuses that upgrade by default. After reviewing the candidate, explicitly allow a permission reset if needed:
 
 ```sh
-python3 scripts/install_app.py --source dist/Nemo.app --allow-permission-reset
+cargo xtask install --allow-permission-reset
 ```
 
-Then re-enable Nemo in Accessibility if macOS requires it. Use the retained backup as `--source` to roll back; an ad hoc rollback can also require permission approval. For stable signed releases, set `NEMO_SIGN_IDENTITY` to a Developer ID Application identity when packaging. Developer ID signing, notarization, and permission continuity across signed releases still require release validation before public distribution.
+Then re-enable Nemo in Accessibility if macOS requires it. Retain the backup path printed by the installer for recovery; an ad hoc rollback can also require permission approval. For stable signed releases, set `NEMO_SIGN_IDENTITY` to a Developer ID Application identity when packaging. Developer ID signing, notarization, and permission continuity across signed releases still require release validation before public distribution.
 
 ### CI without hosted minutes
 
-`.github/workflows/check.yml` contains the same local check command. It has **no push or pull-request trigger**. Manual dispatch is also gated on the repository variable `NEMO_ENABLE_HOSTED_CI=true`; leave it unset while Actions minutes are unavailable. Run `scripts/check.sh` locally before review. Hosted CI has not been run.
+`.github/workflows/check.yml` contains the same local check command. It has **no push or pull-request trigger**. Manual dispatch is also gated on the repository variable `NEMO_ENABLE_HOSTED_CI=true`; leave it unset while Actions minutes are unavailable. Run `cargo xtask check` locally before review. Hosted CI has not been run.
 
 Logs: `~/Library/Application Support/Nemo/daemon.log` and `inference.log`. Transcription timing events in `daemon.log` report model loading, request latency, audio duration, model reuse, and success as JSON, without audio or transcript content. CLI timing events go to stderr. Startup failures from Finder appear in `daemon.log`; `nemo doctor` checks paths and the input device, and distinguishes CLI permissions from those reported by the running daemon. `nemo permissions` inspects its own process without opening a microphone stream. An app launched from Finder can have different permissions than a command run from a permitted terminal.
 
@@ -137,7 +151,9 @@ Use the project skill [$verify-nemo](../.agents/skills/verify-nemo/SKILL.md) to 
 
 ## Design
 
-The main event loop owns the recording state and all menu updates. Microphone opening and model work happen off the UI thread. Starting, recording, and working are explicit states; busy toggles cannot create overlapping inference jobs. Cancellation marks a job before stopping its owned subprocess, so a late result cannot paste text. One authenticated loopback server serves the daemon's requests; the control socket is in a private directory. No window takes focus during dictation.
+The app and `xtask` share the Rust native builder, packaging, and installer library; the developer command does not wrap Python or Bash scripts. The main event loop owns the recording state, indicator, and all menu updates. Microphone opening and model work happen off the UI thread. Starting, recording, and working are explicit states; busy toggles cannot create overlapping inference jobs. Working records the job kind so only transcription shows the processing indicator. Cancellation marks a job before stopping its owned subprocess, so a late result cannot paste text. One authenticated loopback server serves the daemon's requests; the control socket is in a private directory. No window takes focus during dictation.
+
+The indicator is a borderless, nonactivating AppKit panel with click-through behavior, positioned above the Dock on the pointer's display. Recording appears only after microphone startup succeeds; stopping switches to Transcribing, and completion, cancellation, errors, and shutdown hide it. It joins Spaces and full-screen apps. This adapts [Handy's documented overlay](https://handy.computer/docs/advanced#overlay-position) and its macOS [panel](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/overlay.rs#L450-L485), [placement](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/overlay.rs#L180-L277), and [stop transition](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/actions.rs#L640-L652) at commit `7bfb2e2c934b798bcf6e3627653aed2439996f89`. Handy uses a Tauri webview; Nemo draws its own native pill without reusing Handy code or assets. Handy's live docs describe position and visibility together, while that source revision separates overlay style and position.
 
 The controller is MIT licensed. The model uses OpenMDW-1.1; the native runtime uses Apache-2.0 and includes its third-party notices. Bundled runtime notices are under `Nemo.app/Contents/Resources/licenses`.
 

@@ -3,6 +3,7 @@ mod backend;
 mod bootstrap;
 mod config;
 mod control;
+mod indicator;
 mod model;
 mod output;
 mod permissions;
@@ -59,6 +60,25 @@ enum Command {
     },
     /// Run the menu bar daemon directly, without installing an app.
     Run,
+    /// Preview the recording indicator without microphone access or sound.
+    PreviewIndicator {
+        /// Save a PNG of each visible phase in this directory.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Report the running daemon's executable and startup fingerprint.
+    Identity,
+    #[command(hide = true)]
+    PrepareApp {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        binary: PathBuf,
+        #[arg(long)]
+        destination: PathBuf,
+        #[arg(long)]
+        allow_permission_reset: bool,
+    },
     /// Start recording, or stop and transcribe.
     Toggle,
     /// Discard the current recording or transcription.
@@ -126,6 +146,11 @@ enum Outcome {
     ModelDownloaded,
     Transcript(String),
 }
+enum WorkKind {
+    Warm,
+    Download,
+    Transcribe,
+}
 enum State {
     Idle,
     Starting {
@@ -140,7 +165,22 @@ enum State {
     Working {
         id: u64,
         canceled: Arc<AtomicBool>,
+        kind: WorkKind,
     },
+}
+
+impl State {
+    fn indicator_phase(&self) -> indicator::Phase {
+        match self {
+            Self::Recording { .. } => indicator::Phase::Recording,
+            Self::Working {
+                kind: WorkKind::Transcribe,
+                canceled,
+                ..
+            } if !canceled.load(Ordering::Acquire) => indicator::Phase::Transcribing,
+            Self::Idle | Self::Starting { .. } | Self::Working { .. } => indicator::Phase::Hidden,
+        }
+    }
 }
 
 fn main() {
@@ -161,16 +201,26 @@ fn execute() -> Result<()> {
             println!("Installed {}. Run `nemo` to open it.", app.display());
             return Ok(());
         }
+        Some(Command::PreviewIndicator { output }) => return indicator::preview(output.as_deref()),
+        Some(Command::PrepareApp {
+            root,
+            binary,
+            destination,
+            allow_permission_reset,
+        }) => return bootstrap::prepare(root, binary, destination, allow_permission_reset),
         None => Command::Run,
         Some(command) => command,
     };
     let mut config = Config::load()?;
     match command {
-        Command::Install { .. } => unreachable!(),
+        Command::Install { .. } | Command::PreviewIndicator { .. } | Command::PrepareApp { .. } => {
+            unreachable!()
+        }
         Command::Run => run(config),
         Command::Toggle => remote("toggle"),
         Command::Cancel => remote("cancel"),
         Command::Status => remote("status"),
+        Command::Identity => remote("identity"),
         Command::Settings => remote("settings"),
         Command::Warm => remote("warm"),
         Command::Quit { if_idle: false } => remote("quit"),
@@ -425,6 +475,7 @@ fn run(mut config: Config) -> Result<()> {
     }));
 
     let status = Arc::new(Mutex::new(String::from("ready")));
+    let executable_sha256 = nemo_build::sha256(&std::env::current_exe()?)?;
     let socket_status = status.clone();
     let proxy = event_loop.create_proxy();
     let listener = server.listener.try_clone()?;
@@ -444,6 +495,7 @@ fn run(mut config: Config) -> Result<()> {
                 serde_json::json!({
                     "pid": std::process::id(),
                     "executable": std::env::current_exe().ok(),
+                    "sha256": executable_sha256,
                 })
                 .to_string()
             } else if command == "quit-idle" {
@@ -533,12 +585,14 @@ fn run(mut config: Config) -> Result<()> {
         let _ = proxy.send_event(Event::SettingsChanged(change));
     })?;
     let sounds = sounds::Player::new()?;
+    let mut indicator = indicator::Indicator::new();
     let mut state = State::Idle;
     let recording_proxy = event_loop.create_proxy();
     let mut next_id = 0;
     let mut last_toggle = Instant::now() - Duration::from_secs(1);
     let shortcut = config.hotkey.clone();
-    let render_controls = move |state: &State| {
+    let mut render_controls = move |state: &State| {
+        indicator.set_phase(state.indicator_phase());
         let recording = matches!(state, State::Recording { .. });
         toggle_item.set_text(if recording {
             "Stop recording".into()
@@ -665,7 +719,7 @@ fn run(mut config: Config) -> Result<()> {
                 match &state { State::Recording { started, .. } if started.elapsed() >= Duration::from_secs(config.max_recording_seconds) => Some("toggle".into()), _ => None }
             },
             TaoEvent::UserEvent(Event::Finished(id, result)) => {
-                if let State::Working { id: current, canceled } = &state && *current == id {
+                if let State::Working { id: current, canceled, .. } = &state && *current == id {
                     let was_canceled = canceled.load(Ordering::Acquire);
                     state = State::Idle;
                     if was_canceled { set_status("Canceled", [160,160,160]); }
@@ -713,7 +767,7 @@ fn run(mut config: Config) -> Result<()> {
                 next_id += 1;
                 let canceled = Arc::new(AtomicBool::new(false));
                 let _ = jobs.send(Job::Warm(next_id, canceled.clone()));
-                state = State::Working { id: next_id, canceled };
+                state = State::Working { id: next_id, canceled, kind: WorkKind::Warm };
                 set_status("Loading model", [230,170,30]);
             }
             "download" if matches!(state, State::Idle) => {
@@ -721,7 +775,7 @@ fn run(mut config: Config) -> Result<()> {
                 next_id += 1;
                 let canceled = Arc::new(AtomicBool::new(false));
                 let _ = jobs.send(Job::Download(next_id, canceled.clone()));
-                state = State::Working { id: next_id, canceled };
+                state = State::Working { id: next_id, canceled, kind: WorkKind::Download };
                 set_status("Downloading model", [230,170,30]);
             }
             "toggle" => {
@@ -751,7 +805,7 @@ fn run(mut config: Config) -> Result<()> {
                         Ok(wav) => {
                             next_id += 1;
                             let _ = jobs.send(Job::Transcribe(next_id, wav, canceled.clone()));
-                            state = State::Working { id: next_id, canceled };
+                            state = State::Working { id: next_id, canceled, kind: WorkKind::Transcribe };
                             set_status("Transcribing", [230,170,30]);
                         }
                         Err(error) => { canceled.store(true, Ordering::Release); set_status(&format!("{error:#}"), [230,80,60]); output::sound("Basso"); }
@@ -762,7 +816,7 @@ fn run(mut config: Config) -> Result<()> {
             }
             _ => {}
         }
-        render_controls(&state);
+        render_controls(if matches!(*flow, ControlFlow::Exit) { &State::Idle } else { &state });
         if !matches!(*flow, ControlFlow::Exit) {
             *flow = ControlFlow::WaitUntil(match &state {
                 State::Recording { started, .. } => next_permissions_check.min(*started + Duration::from_secs(config.max_recording_seconds)),
@@ -770,6 +824,53 @@ fn run(mut config: Config) -> Result<()> {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod indicator_tests {
+    use super::*;
+    use indicator::Phase;
+
+    #[test]
+    fn only_transcription_shows_a_processing_indicator() {
+        let state = |kind| State::Working {
+            id: 1,
+            canceled: Arc::new(AtomicBool::new(false)),
+            kind,
+        };
+        assert_eq!(state(WorkKind::Warm).indicator_phase(), Phase::Hidden);
+        assert_eq!(state(WorkKind::Download).indicator_phase(), Phase::Hidden);
+        assert_eq!(
+            state(WorkKind::Transcribe).indicator_phase(),
+            Phase::Transcribing
+        );
+    }
+
+    #[test]
+    fn canceling_transcription_hides_the_indicator_before_the_worker_finishes() {
+        let canceled = Arc::new(AtomicBool::new(false));
+        let state = State::Working {
+            id: 1,
+            canceled: canceled.clone(),
+            kind: WorkKind::Transcribe,
+        };
+        assert_eq!(state.indicator_phase(), Phase::Transcribing);
+        canceled.store(true, Ordering::Release);
+        assert_eq!(state.indicator_phase(), Phase::Hidden);
+        assert_eq!(State::Idle.indicator_phase(), Phase::Hidden);
+    }
+
+    #[test]
+    fn microphone_setup_does_not_claim_to_be_recording() {
+        let canceled = Arc::new(AtomicBool::new(false));
+        let state = State::Starting {
+            id: 1,
+            canceled: canceled.clone(),
+        };
+        assert_eq!(state.indicator_phase(), Phase::Hidden);
+        canceled.store(true, Ordering::Release);
+        assert_eq!(state.indicator_phase(), Phase::Hidden);
+    }
 }
 
 #[cfg(test)]

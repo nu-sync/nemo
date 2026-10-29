@@ -1,6 +1,6 @@
 name: Check
 
-# Hosted minutes are exhausted. No push/PR trigger; manual runs also require opt-in.
+# Hosted CI is opt-in. Keep local checks available without hosted minutes.
 on:
   workflow_dispatch:
 
@@ -19,4 +19,4 @@ jobs:
       - name: Run the local check suite
         run: |
           rustup default 1.95.0
-          scripts/check.sh
+          cargo xtask check

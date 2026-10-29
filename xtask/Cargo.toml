@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+nemo-build = { path = "../crates/nemo-build" }
+serde_json = "1"
+tempfile = "3"

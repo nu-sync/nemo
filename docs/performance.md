@@ -2,6 +2,8 @@
 
 Nemo starts loading the model in the background when microphone capture begins, so recording and loading overlap. It then keeps the model for five idle minutes on this laptop. This uses about 20 GB of resident memory; the model and transcription quality stay unchanged.
 
+A separate [conservative VAD experiment](vad-experiment.md) tested trimming leading and trailing silence before inference. It preserved reference words in the tested speech cases, but the delivery-time gains missed the experiment's retention gate, so VAD was not added to the app. The report records the measurements, limits, and conditions for revisiting that decision.
+
 ## Configuration
 
 For the 128 GB M5 Max, use these settings in `~/Library/Application Support/Nemo/config.toml`, then restart Nemo:

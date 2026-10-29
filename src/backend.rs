@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires downloaded model and artifacts/sample.wav; run scripts/verify.sh"]
+    #[ignore = "requires downloaded model and artifacts/sample.wav; run cargo xtask verify"]
     fn real_model_transcribes_repeated_audio() {
         let mut backend = Backend::new(Config::load().unwrap(), Process::default()).unwrap();
         let audio = fs::read("artifacts/sample.wav").unwrap();

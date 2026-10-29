@@ -1,6 +1,6 @@
 # Combined installation verification
 
-The settings chat, **Add trailing period setting**, froze its changes before the final build. The combined app is installed at `~/Applications/Nemo.app`. Its core `verify-nemo` journeys passed: real speaker/microphone capture, loading during recording, warm reuse, visible paste into an unsent ChatGPT draft, and full idle expiry in an isolated instance of the same installed executable. TextEdit paste is not claimed.
+Settings and runtime changes were frozen before the final build. The combined app is installed at `~/Applications/Nemo.app`. Its core `verify-nemo` journeys passed: real speaker/microphone capture, loading during recording, warm reuse, visible paste into an unsent ChatGPT draft, and full idle expiry in an isolated instance of the same installed executable. TextEdit paste is not claimed.
 
 ## Installed artifact
 

@@ -10,29 +10,32 @@ Nemo is a local dictation app for Apple Silicon Macs running macOS 26+. The Rust
 
 - `src/`: CLI and menu event loop (`main.rs`), audio, inference backend, model management, configuration, settings, shortcuts, and paste integration.
 - `tests/cli.rs`: CLI integration tests; unit tests live beside Rust implementations.
-- `scripts/`: runtime builds, packaging, installation, and verification; Python tests live in `scripts/tests/`.
+- `xtask/`: Rust development commands; `.cargo/config.toml` exposes `cargo xtask`.
+- `crates/nemo-build/`: shared native build, packaging, and installation code.
+- `scripts/`: optional Python diagnostics and acoustic verification helpers.
 - `assets/sounds/`: bundled audio and licenses. `models/manifest.json` pins model downloads; `vendor/NeMo-Speech.cpp/` holds native runtime sources.
 - `docs/`: development, installation, performance, and verification details.
 
 ## Build, Test, and Development Commands
 
-Run commands from the repository root. Use Rust, Python 3.11+, Homebrew, and Xcode Command Line Tools.
+Run commands from the repository root. Use Rust, Homebrew, and Xcode Command Line Tools. Python 3.11+ is only needed for optional diagnostic scripts.
 
 - `cargo build --release --locked`: build `target/release/nemo`.
 - `cargo run --locked -- run`: start the development daemon directly.
-- `scripts/check.sh`: run formatting, Clippy with warnings denied, Rust tests, Python tests, and shell syntax checks. No model or microphone permissions required.
-- `scripts/package.sh`: build `dist/Nemo.app`.
-- `scripts/verify.sh`: run checks and real model transcription; requires downloaded weights and the native runtime.
+- `cargo xtask check`: run formatting, Clippy with warnings denied, and workspace tests. No model or microphone permissions required.
+- `cargo xtask package`: build `dist/Nemo.app`.
+- `cargo xtask install`: build, sign, safely install, and confirm the running app.
+- `cargo xtask release-check`: inspect release inputs without publishing. Live dictation verification remains a separate authorized check.
 
 See `docs/development.md` for setup and installation commands.
 
 ## Coding Style & Naming Conventions
 
-Use `cargo fmt` and keep `cargo clippy --all-targets --locked -- -D warnings` clean. Follow existing four-space indentation, Rust `snake_case` functions/modules and `PascalCase` types, and Python standard-library conventions. Keep modules focused and changes small. The main event loop owns recording state and menu updates; keep microphone opening and inference work off the UI thread.
+Use `cargo fmt` and keep `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. Follow existing four-space indentation, Rust `snake_case` functions/modules and `PascalCase` types, and Python standard-library conventions. Keep modules focused and changes small. The main event loop owns recording state and menu updates; keep microphone opening and inference work off the UI thread.
 
 ## Testing Guidelines
 
-Use Rust `#[test]` and Python `unittest`; name tests after observable behavior (`fresh_configuration_works_outside_the_checkout`, `test_*`). Add regression coverage for changed behavior. No numeric coverage threshold is configured. Run `scripts/check.sh` before review. For dictation changes, follow `.agents/skills/verify-nemo/SKILL.md` to verify real recording, transcription, paste, and unloading.
+Use Rust `#[test]` and Python `unittest`; name tests after observable behavior (`fresh_configuration_works_outside_the_checkout`, `test_*`). Add regression coverage for changed behavior. No numeric coverage threshold is configured. Run `cargo xtask check` before review. For dictation changes, follow `.agents/skills/verify-nemo/SKILL.md` to verify real recording, transcription, paste, and unloading.
 
 ## Commit & Pull Request Guidelines
 

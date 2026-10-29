@@ -1,15 +1,24 @@
+[workspace]
+members = [".", "crates/nemo-build", "xtask"]
+default-members = ["."]
+resolver = "3"
+
 [package]
 name = "nemo-dictate"
 version = "0.2.0"
 edition = "2024"
 description = "Local Nemotron dictation for macOS"
 license = "MIT"
+repository = "https://github.com/nu-sync/nemo"
+readme = "README.md"
+exclude = ["artifacts/", "dist/", "vendor/", "models/*.gguf", "models/*.part"]
 
 [[bin]]
 name = "nemo"
 path = "src/main.rs"
 
 [dependencies]
+nemo-build = { path = "crates/nemo-build" }
 anyhow = "1"
 block2 = "0.6"
 clap = { version = "4", features = ["derive"] }
@@ -19,7 +28,7 @@ global-hotkey = "0.9"
 hound = "3.5"
 libc = "0.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace", "NSRunningApplication", "NSEvent", "NSButton", "NSTextField", "NSPopUpButton", "NSSound", "block2"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace", "NSRunningApplication", "NSEvent", "NSButton", "NSTextField", "NSPopUpButton", "NSSound", "NSPanel", "NSWindow", "NSScreen", "NSGraphics", "NSBezierPath", "NSColor", "NSFont", "NSFontDescriptor", "NSControl", "NSView", "NSBitmapImageRep", "NSImageRep", "objc2-core-foundation", "libc", "block2"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSString", "NSGeometry", "NSObject", "NSBundle", "NSData"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "multipart"] }

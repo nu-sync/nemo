@@ -8,6 +8,8 @@ fn cli(root: &std::path::Path, args: &[&str]) -> Output {
         .args(args)
         .env("NEMO_DATA_DIR", root.join("data"))
         .env("HOME", root.join("home"))
+        .env_remove("NEMO_APP_PATH")
+        .env_remove("NEMO_RUNTIME")
         .current_dir(root)
         .output()
         .unwrap()
@@ -198,4 +200,60 @@ fn installer_quit_requires_an_explicit_idle_acknowledgement() {
         server.join().unwrap();
         assert_eq!(output.status.success(), expected_success);
     }
+}
+
+#[test]
+#[ignore = "requires a graphical macOS session; silent daemon startup only"]
+fn daemon_identity_keeps_the_startup_fingerprint_after_the_file_is_replaced() {
+    use std::{
+        process::Stdio,
+        thread,
+        time::{Duration, Instant},
+    };
+    struct Daemon(std::process::Child);
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("nemo");
+    fs::copy(env!("CARGO_BIN_EXE_nemo"), &binary).unwrap();
+    let expected = nemo_build::sha256(&binary).unwrap();
+    let mut daemon = Daemon(
+        Command::new(&binary)
+            .arg("run")
+            .env("NEMO_DATA_DIR", root.path().join("data"))
+            .env("NEMO_APP_PATH", root.path().join("Nemo.app"))
+            .env_remove("NEMO_RUNTIME")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let identity = loop {
+        let response = cli(root.path(), &["identity"]);
+        if response.status.success() {
+            break serde_json::from_slice::<serde_json::Value>(&response.stdout).unwrap();
+        }
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "daemon exited during startup"
+        );
+        assert!(Instant::now() < deadline, "daemon did not start");
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(identity["pid"].as_u64(), Some(daemon.0.id() as u64));
+    assert_eq!(identity["sha256"], expected);
+    let replacement = root.path().join("replacement");
+    fs::copy("/usr/bin/true", &replacement).unwrap();
+    fs::rename(replacement, &binary).unwrap();
+    assert_ne!(nemo_build::sha256(&binary).unwrap(), expected);
+    let response = cli(root.path(), &["identity"]);
+    assert!(response.status.success());
+    let identity: serde_json::Value = serde_json::from_slice(&response.stdout).unwrap();
+    assert_eq!(identity["sha256"], expected);
+    assert_eq!(identity["pid"].as_u64(), Some(daemon.0.id() as u64));
 }
