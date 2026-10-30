@@ -81,6 +81,9 @@ For a latency-focused configuration on a Mac with ample unified memory, use `idl
 ./target/release/nemo warm
 ./target/release/nemo quit
 ./target/release/nemo doctor
+./target/release/nemo doctor --color always
+./target/release/nemo assist
+./target/release/nemo assist --dry-run
 ./target/release/nemo permissions
 ./target/release/nemo model path
 ./target/release/nemo model download
@@ -144,6 +147,24 @@ Then re-enable Nemo in Accessibility if macOS requires it. Retain the backup pat
 `.github/workflows/check.yml` contains the same local check command. It has **no push or pull-request trigger**. Manual dispatch is also gated on the repository variable `NEMO_ENABLE_HOSTED_CI=true`; leave it unset while Actions minutes are unavailable. Run `cargo xtask check` locally before review. Hosted CI has not been run.
 
 Logs: `~/Library/Application Support/Nemo/daemon.log` and `inference.log`. Transcription timing events in `daemon.log` report model loading, request latency, audio duration, model reuse, and success as JSON, without audio or transcript content. CLI timing events go to stderr. Startup failures from Finder appear in `daemon.log`; `nemo doctor` checks paths and the input device, and distinguishes CLI permissions from those reported by the running daemon. `nemo permissions` inspects its own process without opening a microphone stream. An app launched from Finder can have different permissions than a command run from a permitted terminal.
+
+### Readiness and recovery
+
+The first tray row shows readiness independently of recording activity or the last result. When it says **Right Option blocked: enable Accessibility**, click that row to open the Accessibility settings pane and enable Nemo. Permission changes are observed every two seconds. Failed shortcut registration is retried on that interval; a granted permission alone does not count as a registered shortcut.
+
+`nemo doctor` reads the same structured readiness snapshot from the running app. It lists all known blockers and their remedies, including commands that open the appropriate macOS settings pane. Older apps without the readiness protocol are reported as unknown; a stopped app is never reported as ready. Colors are automatic in terminals, disabled for redirected output or `NO_COLOR`, and overridable with `--color always` or `--color never`.
+
+`nemo assist` prints the next blocker and its remedy, speaks the explanation with macOS `say`, then opens the relevant System Settings pane or Nemo Settings when available. Enable the permission yourself, then rerun the command to check the next blocker. The command does not change permissions, start recording, install software, or download models. Use `--silent` to skip speech, or `--dry-run` to print guidance without speech or opening settings. Speech failures still allow the settings action to run and are reported as errors. Assistance reads the running app's readiness without loading local configuration.
+
+`src/readiness.rs` derives readiness from observed permissions, shortcut registration, microphone discovery, model assets, and runtime availability. The event loop owns these observations and projects its existing lifecycle into an `Activity` enum. Readiness does not require a loaded model: the inference worker can load it during recording.
+
+| Observation | Readiness transition |
+| --- | --- |
+| Accessibility absent for Right Option | Accessibility blocker; settings action available |
+| Accessibility granted, registration unsuccessful | Shortcut unavailable; retry every two seconds |
+| Shortcut registered and all dependencies available | Ready when idle |
+| Permission revoked or dependency lost | Corresponding blocker returns |
+| Recording/transcription begins | Activity changes; existing blockers remain visible |
 
 ## Verify the MacBook audio path
 

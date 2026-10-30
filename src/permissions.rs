@@ -46,18 +46,6 @@ impl Snapshot {
             Microphone::Authorized | Microphone::NotDetermined
         )
     }
-
-    pub fn issue(self, shortcut: &Shortcut) -> Option<&'static str> {
-        if !self.shortcut_allowed(shortcut) {
-            Some("Enable Accessibility")
-        } else if !self.recording_allowed() {
-            Some("Enable Microphone")
-        } else if self.microphone == Microphone::NotDetermined {
-            Some("Microphone permission required")
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -71,19 +59,15 @@ mod tests {
         };
         assert!(!first.shortcut_allowed(&Shortcut::RightOption));
         assert!(first.recording_allowed());
-        assert_eq!(
-            first.issue(&Shortcut::RightOption),
-            Some("Enable Accessibility")
-        );
     }
     #[test]
-    fn granting_permissions_enables_the_shortcut_and_clears_the_issue() {
+    fn granting_accessibility_enables_the_shortcut() {
         let granted = Snapshot {
             accessibility: true,
             microphone: Microphone::Authorized,
         };
         assert!(granted.shortcut_allowed(&Shortcut::RightOption));
-        assert_eq!(granted.issue(&Shortcut::RightOption), None);
+        assert!(granted.recording_allowed());
     }
     #[test]
     fn revoked_microphone_access_blocks_capture_but_not_settings_or_shortcuts() {
@@ -93,10 +77,7 @@ mod tests {
                 microphone,
             };
             assert!(!permissions.recording_allowed());
-            assert_eq!(
-                permissions.issue(&Shortcut::RightOption),
-                Some("Enable Microphone")
-            );
+            assert!(permissions.shortcut_allowed(&Shortcut::RightOption));
         }
     }
     #[test]

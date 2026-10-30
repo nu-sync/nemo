@@ -155,6 +155,10 @@ impl Config {
             self.runtime.is_file(),
             "Inference runtime missing. Reinstall Nemo or set the runtime path in configuration"
         );
+        self.check_model_assets()
+    }
+
+    pub fn check_model_assets(&self) -> Result<()> {
         ensure!(
             self.model.is_file(),
             "Model missing. Choose Download model in Nemo, or run `nemo model download`"

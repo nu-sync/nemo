@@ -91,6 +91,143 @@ fn permissions_can_be_inspected_without_a_microphone_stream_or_daemon() {
     assert!(!root.path().join("data/run/control.sock").exists());
 }
 
+fn doctor_with_readiness(color: &str) -> Output {
+    with_readiness(
+        r#"{"activity":"idle","shortcut":"Right Option","blockers":["accessibility"]}"#,
+        &["doctor", "--color", color],
+    )
+}
+
+fn with_readiness(response: &str, args: &[&str]) -> Output {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+        thread,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let run = root.path().join("data/run");
+    fs::create_dir_all(&run).unwrap();
+    let listener = UnixListener::bind(run.join("control.sock")).unwrap();
+    let response = response.to_owned();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut command = String::new();
+        BufReader::new(&stream).read_line(&mut command).unwrap();
+        assert_eq!(command, "readiness\n");
+        writeln!(stream, "{response}").unwrap();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_nemo"))
+        .args(args)
+        .env("NEMO_DATA_DIR", root.path().join("data"))
+        .env("HOME", root.path().join("home"))
+        .env("NO_COLOR", "1")
+        .env_remove("NEMO_RUNTIME")
+        .env_remove("NEMO_APP_PATH")
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    output
+}
+
+#[test]
+fn doctor_reports_the_apps_accessibility_blocker_and_direct_settings_command() {
+    let output = doctor_with_readiness("auto");
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.starts_with("Nemo doctor\n\nATTENTION  Right Option blocked: enable Accessibility\n")
+    );
+    assert!(text.contains("Source: running Nemo app"));
+    assert!(text.contains("Open settings: open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'"));
+    assert!(text.contains("CLI permissions (this process only):"));
+    assert!(!text.contains('\x1b'));
+}
+
+#[test]
+fn doctor_can_force_color_when_redirected() {
+    let output = doctor_with_readiness("always");
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("\x1b[33mATTENTION\x1b[0m  Right Option blocked: enable Accessibility"));
+}
+
+#[test]
+fn doctor_does_not_claim_readiness_when_the_app_is_stopped() {
+    let root = tempfile::tempdir().unwrap();
+    let output = cli(root.path(), &["doctor", "--color", "never"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("STOPPED  Cannot inspect the Nemo app:"));
+    assert!(text.contains("Open Nemo.app, then run doctor again."));
+    assert!(!text.contains("Ready —"));
+    assert!(!text.contains('\x1b'));
+}
+
+#[test]
+fn assist_dry_run_explains_only_the_next_blocker_and_its_settings_destination() {
+    let output = with_readiness(
+        r#"{"activity":"idle","shortcut":"Right Option","blockers":["accessibility","model_missing"]}"#,
+        &["assist", "--dry-run"],
+    );
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.starts_with(
+            "Right Option blocked: enable Accessibility. Enable Nemo in System Settings"
+        )
+    );
+    assert!(text.contains(
+        "Would open: x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+    ));
+    assert!(!text.contains("model missing"));
+}
+
+#[test]
+fn assist_rechecks_readiness_after_a_blocker_has_been_resolved() {
+    let blocked = with_readiness(
+        r#"{"activity":"idle","shortcut":"Right Option","blockers":["microphone_permission"]}"#,
+        &["assist", "--dry-run"],
+    );
+    assert!(blocked.status.success());
+    let text = String::from_utf8(blocked.stdout).unwrap();
+    assert!(text.contains("Recording blocked: enable Microphone."));
+    assert!(text.contains(
+        "Would open: x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+    ));
+    let ready = with_readiness(
+        r#"{"activity":"idle","shortcut":"Right Option","blockers":[]}"#,
+        &["assist", "--dry-run"],
+    );
+    assert!(ready.status.success());
+    assert_eq!(
+        String::from_utf8(ready.stdout).unwrap(),
+        "Nemo is ready. Tap Right Option to start recording.\n"
+    );
+}
+
+#[test]
+fn assist_can_explain_a_stopped_app_even_with_invalid_local_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("data")).unwrap();
+    fs::write(root.path().join("data/config.toml"), "invalid TOML").unwrap();
+    let output = cli(root.path(), &["assist", "--dry-run"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Open Nemo.app, then run nemo assist again."));
+    assert!(!text.contains("Would open"));
+    assert!(!root.path().join("data/run").exists());
+}
+
+#[test]
+fn assist_does_not_guess_at_settings_for_an_older_daemon() {
+    let output = with_readiness("unknown command", &["assist", "--dry-run"]);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "The running Nemo app does not provide readiness. Reopen the updated Nemo app, then run nemo assist again.\n"
+    );
+}
+
 #[test]
 fn missing_model_verification_fails_without_downloading_or_creating_files() {
     let root = tempfile::tempdir().unwrap();

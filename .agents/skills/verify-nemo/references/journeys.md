@@ -8,10 +8,15 @@ lists target overrides. Run one acoustic test at a time.
 | --- | --- | --- |
 | Cold acoustic dictation | Installed app, real speakers/microphone, `verify-installed.py --roundtrip-only` | Model starts and becomes ready while Recording; stop produces expected words and visible paste using the prepared PID. |
 | Warm follow-up dictation | Same installed daemon, `verify-installed.py --roundtrip-only --warm` | Another recording reuses the same runtime; no load event occurs during recording, and transcript telemetry reports zero load time and `reused_model=true`. This resets the idle window. |
-| Full five-minute expiry | Live app with `verify-installed.py --observe-idle`, or the same installed executable in an isolated full-expiry check | Same runtime survives the idle interval, then exits near 300 seconds; daemon stays running and reports `Ready · model unloaded`. Label which instance was observed. |
+| Full five-minute expiry | Live app with `verify-installed.py --observe-idle`, or the same installed executable in an isolated full-expiry check | Same runtime survives the idle interval, then exits near 300 seconds; daemon stays idle with a model-unloaded outcome. Label which instance was observed. |
 | Preparation cancellation | Isolated supplemental `verify-performance.py --recording-only` | Cancel during load reaps it; cancel after readiness retains it; clipboard unchanged. This does not establish the Finder-launched app's permissions. |
 
 ## Installed-app readiness
+
+The helpers use `scripts/nemo_status.py` to read the daemon's structured
+`readiness.activity` and its last outcome. Human-readable `status` combines
+readiness with that outcome; its label alone does not establish recording state.
+The helpers retain the older status protocol when checking an older installed app.
 
 Read configuration without changing it:
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Exercise the real daemon's ownership, cancellation, unload, and signal handling."""
 import json
+import os
 import pathlib
 import subprocess
 import time
+
+from nemo_status import control, lifecycle_status
 
 root = pathlib.Path(__file__).resolve().parent.parent
 binary = root / 'target/release/nemo'
@@ -11,6 +14,9 @@ artifacts = root / 'artifacts'
 artifacts.mkdir(exist_ok=True)
 
 def cli(command):
+    if command == 'status':
+        data = pathlib.Path(os.environ.get('NEMO_DATA_DIR', pathlib.Path.home() / 'Library/Application Support/Nemo'))
+        return lifecycle_status(lambda action: control(data, action))
     return subprocess.check_output([str(binary), command], text=True, stderr=subprocess.DEVNULL).strip()
 
 def await_status(expected, timeout=120):
@@ -21,7 +27,7 @@ def await_status(expected, timeout=120):
             actual = cli('status')
             if actual == expected:
                 return time.monotonic() - started
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, OSError):
             pass
         time.sleep(0.05)
     raise AssertionError(f'Expected {expected!r}; last status {actual!r}')
@@ -40,7 +46,7 @@ if running.returncode == 0:
 daemon = subprocess.Popen([str(binary), 'run'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 report = {}
 try:
-    await_status('ready', 10)
+    await_status('Ready', 10)
     duplicate = subprocess.run([str(binary), 'run'], capture_output=True, text=True)
     assert duplicate.returncode != 0 and 'already running' in duplicate.stderr
     report['single_instance'] = 'passed'
