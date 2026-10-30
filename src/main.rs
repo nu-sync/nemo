@@ -143,6 +143,7 @@ enum ModelCommand {
 }
 
 enum Event {
+    IndicatorAction(indicator::Action),
     Action(String),
     SettingsChanged(settings::Change),
     QuitIfIdle(mpsc::Sender<bool>),
@@ -597,7 +598,10 @@ fn run(mut config: Config) -> Result<()> {
         let _ = proxy.send_event(Event::SettingsChanged(change));
     })?;
     let sounds = sounds::Player::new()?;
-    let mut indicator = indicator::Indicator::new();
+    let indicator_proxy = event_loop.create_proxy();
+    let mut indicator = indicator::Indicator::new(move |action| {
+        let _ = indicator_proxy.send_event(Event::IndicatorAction(action));
+    });
     let mut state = State::Idle;
     let recording_proxy = event_loop.create_proxy();
     let mut next_id = 0;
@@ -758,6 +762,9 @@ fn run(mut config: Config) -> Result<()> {
             next_permissions_check = Instant::now() + Duration::from_secs(2);
         }
         let action = match event {
+            TaoEvent::UserEvent(Event::IndicatorAction(action)) => {
+                action.command(state.indicator_phase()).map(str::to_owned)
+            }
             TaoEvent::UserEvent(Event::InputsChanged(scanned_at, result)) => {
                 scanning_inputs = false;
                 match result {
@@ -1096,8 +1103,11 @@ fn run(mut config: Config) -> Result<()> {
                 };
                 set_status("Downloading model");
             }
-            "toggle" => {
-                if last_toggle.elapsed() < Duration::from_millis(200) {
+            "toggle" | "stop" => {
+                if action == "stop" && !matches!(state, State::Recording { .. }) {
+                    return;
+                }
+                if action == "toggle" && last_toggle.elapsed() < Duration::from_millis(200) {
                     return;
                 }
                 last_toggle = Instant::now();
