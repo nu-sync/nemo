@@ -5,6 +5,8 @@ use std::{fs, path::PathBuf};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub microphone: Option<crate::audio::Microphone>,
     pub hotkey: crate::shortcut::Shortcut,
     pub model: PathBuf,
     pub runtime: PathBuf,
@@ -36,6 +38,7 @@ fn is_one(value: &u32) -> bool {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            microphone: None,
             hotkey: crate::shortcut::Shortcut::RightOption,
             model: crate::model::Store::managed().decoder(),
             runtime: default_runtime(),

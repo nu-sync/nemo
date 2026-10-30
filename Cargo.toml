@@ -28,7 +28,7 @@ global-hotkey = "0.9"
 hound = "3.5"
 libc = "0.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSWorkspace", "NSRunningApplication", "NSEvent", "NSButton", "NSTextField", "NSPopUpButton", "NSSound", "NSPanel", "NSWindow", "NSScreen", "NSGraphics", "NSBezierPath", "NSColor", "NSFont", "NSFontDescriptor", "NSControl", "NSView", "NSBitmapImageRep", "NSImageRep", "objc2-core-foundation", "libc", "block2"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAlert", "NSWorkspace", "NSRunningApplication", "NSEvent", "NSButton", "NSTextField", "NSPopUpButton", "NSSound", "NSPanel", "NSWindow", "NSScreen", "NSGraphics", "NSBezierPath", "NSColor", "NSFont", "NSFontDescriptor", "NSControl", "NSView", "NSBitmapImageRep", "NSImageRep", "objc2-core-foundation", "libc", "block2"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSString", "NSGeometry", "NSObject", "NSBundle", "NSData"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["AVCaptureDevice", "AVMediaFormat"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "multipart"] }

@@ -8,18 +8,72 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Microphone {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Inputs {
+    pub devices: Vec<Microphone>,
+    pub default: Option<Microphone>,
+}
+
+impl Inputs {
+    pub fn current() -> Result<Self> {
+        let host = cpal::default_host();
+        let describe = |device: cpal::Device| -> Result<Microphone> {
+            Ok(Microphone {
+                id: device.id()?.to_string(),
+                name: device.description()?.name().to_owned(),
+            })
+        };
+        let devices = host
+            .input_devices()?
+            .map(describe)
+            .collect::<Result<Vec<_>>>()?;
+        let default = host.default_input_device().map(describe).transpose()?;
+        Ok(Self { devices, default })
+    }
+
+    pub fn resolve(&self, selected: Option<&Microphone>) -> Result<(&Microphone, bool)> {
+        if let Some(selected) = selected
+            && let Some(device) = self.devices.iter().find(|d| d.id == selected.id)
+        {
+            return Ok((device, false));
+        }
+        let default = self
+            .default
+            .as_ref()
+            .context("No microphone available. Connect a microphone and try again")?;
+        Ok((default, selected.is_some()))
+    }
+}
+
+pub enum Start {
+    Recording(Recording),
+    ConfirmFallback(Microphone),
+}
+
 pub struct Recording {
     stream: cpal::Stream,
     samples: Arc<Mutex<Vec<f32>>>,
     error: Arc<Mutex<Option<String>>>,
     sample_rate: u32,
+    pub microphone: Microphone,
 }
 
 impl Recording {
-    pub fn start(max_seconds: u64) -> Result<Self> {
+    pub fn start(max_seconds: u64, selected: Option<&Microphone>) -> Result<Start> {
+        let inputs = Inputs::current()?;
+        let (microphone, fallback) = inputs.resolve(selected)?;
+        if fallback {
+            return Ok(Start::ConfirmFallback(microphone.clone()));
+        }
         let device = cpal::default_host()
-            .default_input_device()
-            .context("No microphone found")?;
+            .device_by_id(&microphone.id.parse()?)
+            .context("Microphone disconnected before recording started")?;
         let supported = device.default_input_config().context(
             "Cannot open microphone. Check System Settings → Privacy & Security → Microphone",
         )?;
@@ -35,12 +89,17 @@ impl Recording {
             format => bail!("Unsupported microphone sample format: {format}"),
         };
         stream.play()?;
-        Ok(Self {
+        Ok(Start::Recording(Self {
+            microphone: microphone.clone(),
             stream,
             samples,
             error,
             sample_rate,
-        })
+        }))
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.error.lock().unwrap().clone()
     }
 
     pub fn finish(self) -> Result<Vec<u8>> {
@@ -110,6 +169,103 @@ pub fn wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn microphone(id: &str, name: &str) -> Microphone {
+        Microphone {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn selection_uses_identity_even_when_names_match_and_devices_reorder() {
+        let first = microphone("first", "USB microphone");
+        let second = microphone("second", "USB microphone");
+        let inputs = Inputs {
+            devices: vec![second.clone(), first.clone()],
+            default: Some(first),
+        };
+        assert_eq!(inputs.resolve(Some(&second)).unwrap(), (&second, false));
+    }
+
+    #[test]
+    fn disconnected_selection_requires_confirmation_and_reconnect_restores_it() {
+        let selected = microphone("headset", "Headset");
+        let built_in = microphone("built-in", "Built-in microphone");
+        let mut inputs = Inputs {
+            devices: vec![built_in.clone()],
+            default: Some(built_in.clone()),
+        };
+        assert_eq!(inputs.resolve(Some(&selected)).unwrap(), (&built_in, true));
+        inputs.devices.push(selected.clone());
+        assert_eq!(inputs.resolve(Some(&selected)).unwrap(), (&selected, false));
+        assert_eq!(inputs.resolve(None).unwrap(), (&built_in, false));
+    }
+
+    #[test]
+    fn no_microphone_or_missing_default_never_selects_an_arbitrary_input() {
+        let selected = microphone("headset", "Headset");
+        let mut inputs = Inputs::default();
+        assert!(
+            inputs
+                .resolve(None)
+                .unwrap_err()
+                .to_string()
+                .contains("No microphone available")
+        );
+        assert!(inputs.resolve(Some(&selected)).is_err());
+        inputs.devices.push(selected.clone());
+        assert_eq!(inputs.resolve(Some(&selected)).unwrap(), (&selected, false));
+        assert!(inputs.resolve(None).is_err());
+    }
+
+    #[test]
+    fn system_default_is_resolved_again_without_changing_explicit_selection() {
+        let built_in = microphone("built-in", "Built-in microphone");
+        let headset = microphone("headset", "Headset");
+        let mut inputs = Inputs {
+            devices: vec![built_in.clone(), headset.clone()],
+            default: Some(built_in.clone()),
+        };
+        assert_eq!(inputs.resolve(None).unwrap(), (&built_in, false));
+        inputs.default = Some(headset.clone());
+        assert_eq!(inputs.resolve(None).unwrap(), (&headset, false));
+        assert_eq!(inputs.resolve(Some(&built_in)).unwrap(), (&built_in, false));
+    }
+
+    #[test]
+    #[ignore = "requires an available microphone and macOS microphone permission"]
+    fn real_microphone_opens_by_id_and_missing_selection_requires_confirmation() {
+        let inputs = Inputs::current().unwrap();
+        let default = inputs
+            .default
+            .as_ref()
+            .expect("System default microphone required");
+        let missing = microphone(
+            "coreaudio:nemo-test-disconnected-input",
+            "Disconnected test input",
+        );
+        match Recording::start(1, Some(&missing)).unwrap() {
+            Start::ConfirmFallback(device) => assert_eq!(&device.id, &default.id),
+            Start::Recording(_) => panic!("Missing input opened a stream without confirmation"),
+        }
+        for selection in [None, Some(default)] {
+            let recording = match Recording::start(1, selection).unwrap() {
+                Start::Recording(recording) => recording,
+                Start::ConfirmFallback(_) => {
+                    panic!("Available input unexpectedly required fallback")
+                }
+            };
+            assert_eq!(recording.microphone.id, default.id);
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            assert!(recording.error().is_none(), "{:?}", recording.error());
+            assert!(
+                !recording.samples.lock().unwrap().is_empty(),
+                "Input stream produced no samples"
+            );
+            drop(recording);
+        }
+    }
+
     #[test]
     fn wav_preserves_duration_and_clips_pcm() {
         let bytes = wav(&[-2.0, -0.5, 0.0, 0.5, 2.0], 16000).unwrap();

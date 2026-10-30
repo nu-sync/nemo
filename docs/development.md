@@ -160,3 +160,35 @@ The controller is MIT licensed. The model uses OpenMDW-1.1; the native runtime u
 ## Model and runtime
 
 Uses [NVIDIA Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B), the [AtomicChat IQ4_NL conversion](https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF), and NVIDIA's [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) Metal backend. The controller, microphone capture, shortcut, and paste integration are Rust. Inference runs in a managed native C++ subprocess. No Python environment, cloud service, or API key is required at runtime.
+
+## Microphone selection
+
+Choose **Settings → Microphone** to use the system default or a specific input.
+Nemo saves the device ID and name in `config.toml`; an omitted `microphone` table
+uses the system default. The menu and Settings show the current input. Available
+inputs refresh every two seconds without opening a recording stream.
+
+If a saved device is unavailable, Nemo asks before using the current system default
+for one recording. Cancel leaves the microphone closed. The saved device remains
+selected and is used again when it reconnects. Disconnecting an active input stops
+and discards the recording; Nemo does not switch inputs mid-recording. With no
+usable default, recording reports an error.
+
+To verify on macOS, select each available input and record, reopen Nemo to check
+persistence, then disconnect and reconnect the selected input. Check both Cancel
+and Use system default in the fallback prompt, confirm reconnection restores the
+saved input, and verify an active disconnect discards the recording. Check the
+empty-device case on a host with no inputs. Follow the `verify-nemo` skill for the
+acoustic transcription and paste journey; unit tests simulate device inventories.
+
+For a brief hardware stream check that discards captured samples without saving
+or transcribing them:
+
+```sh
+cargo test --locked audio::tests::real_microphone_opens_by_id_and_missing_selection_requires_confirmation -- --ignored --exact
+```
+
+This opens the current system-default input both automatically and by its saved
+ID, checks that samples arrive, and verifies a missing device requires fallback
+confirmation before opening a stream. It does not replace the UI, physical
+unplug/reconnect, or installed-app transcription/paste checks.

@@ -257,3 +257,38 @@ fn daemon_identity_keeps_the_startup_fingerprint_after_the_file_is_replaced() {
     assert_eq!(identity["sha256"], expected);
     assert_eq!(identity["pid"].as_u64(), Some(daemon.0.id() as u64));
 }
+
+#[test]
+fn microphone_preference_survives_process_restarts_and_other_setting_updates() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("data")).unwrap();
+    let path = root.path().join("data/config.toml");
+    fs::write(
+        &path,
+        "[microphone]\nid = 'coreaudio:headset-uid'\nname = 'USB Headset'\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["config"],
+        vec!["config", "--hotkey", "RightOption"],
+        vec!["config"],
+    ] {
+        let output = cli(root.path(), &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let config: toml::Value =
+            toml::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+        assert_eq!(
+            config["microphone"]["id"].as_str(),
+            Some("coreaudio:headset-uid")
+        );
+        assert_eq!(config["microphone"]["name"].as_str(), Some("USB Headset"));
+    }
+    fs::write(&path, "").unwrap();
+    let output = cli(root.path(), &["config"]);
+    let config: toml::Value = toml::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert!(config.get("microphone").is_none());
+}
