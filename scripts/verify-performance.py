@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 
+from nemo_status import control, lifecycle_status
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -84,6 +86,13 @@ def phase(args, name, idle_seconds, operation, preload=True):
         env.pop("NEMO_SPEECH_TIMING", None)
 
         def cli(command, required=True):
+            if command == "status":
+                try:
+                    return lifecycle_status(lambda action: control(data, action))
+                except OSError:
+                    if required:
+                        raise
+                    return None
             response = subprocess.run([str(args.binary), command], env=env,
                                       capture_output=True, text=True, timeout=5)
             if required and response.returncode:

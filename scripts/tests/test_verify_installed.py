@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'verify-installed.py'
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location('verify_installed', SCRIPT)
 verifier = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verifier)
@@ -50,6 +51,8 @@ class InstalledVerifierCleanupTests(unittest.TestCase):
         def control(_data, command):
             if command == 'permissions':
                 return json.dumps({'accessibility': True, 'microphone': 'authorized'})
+            if command == 'readiness':
+                return 'unknown command'
             self.assertEqual(command, 'status')
             return self.status
 

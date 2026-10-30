@@ -12,11 +12,12 @@ import os
 from pathlib import Path
 import re
 import signal
-import socket
 import subprocess
 import sys
 import time
 import tomllib
+
+from nemo_status import control, lifecycle_status
 
 PHRASE = "The quick brown fox jumps over the lazy dog. This is a local speech recognition test on my laptop."
 
@@ -37,14 +38,6 @@ def processes():
     output = subprocess.check_output(["/bin/ps", "-A", "-o", "pid=,ppid=,comm="], text=True)
     return [(int(parts[0]), int(parts[1]), parts[2]) for line in output.splitlines()
             if len(parts := line.strip().split(None, 2)) == 3]
-
-
-def control(data, command):
-    with socket.socket(socket.AF_UNIX) as connection:
-        connection.settimeout(3)
-        connection.connect(str(data / "run/control.sock"))
-        connection.sendall((command + "\n").encode())
-        return connection.makefile("r").readline().strip()
 
 
 def observe_idle(args, report, save, status, runtime_pids):
@@ -75,7 +68,8 @@ def observe_idle(args, report, save, status, runtime_pids):
                 events.append(event)
         except ValueError:
             pass
-    if (initial == "Ready" and runtime_pid and initial_text.splitlines()[-1:] == ["Ready"]
+    outcome_lines = [line for line in initial_text.splitlines() if not line.startswith("Readiness: ")]
+    if (initial == "Ready" and runtime_pid and outcome_lines[-1:] in (["Ready"], ["Transcript delivered"])
             and events and events[-1].get("success") and initial_age < 295):
         baseline = now - initial_age
         report["baseline_resets"].append({"source": "initial Ready log mtime proxy",
@@ -226,7 +220,7 @@ def main():
         temporary.replace(destination)
 
     def status():
-        return control(args.data_dir, "status")
+        return lifecycle_status(lambda command: control(args.data_dir, command))
 
     def cli(command):
         result = subprocess.run([str(binary), command], capture_output=True, text=True, timeout=5,
