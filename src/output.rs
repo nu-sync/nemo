@@ -1,9 +1,10 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
+use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+use objc2_foundation::NSString;
 use std::{
-    io::Write,
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     thread,
-    time::Duration,
 };
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -39,24 +40,28 @@ pub fn frontmost_app() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-pub fn deliver(text: &str, paste: bool) -> Result<()> {
-    let mut child = Command::new("/usr/bin/pbcopy")
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("Cannot open clipboard")?;
-    child
-        .stdin
-        .take()
-        .context("Missing clipboard pipe")?
-        .write_all(text.as_bytes())?;
-    ensure!(child.wait()?.success(), "Copy to clipboard failed");
+pub fn deliver(text: &str, paste: bool, canceled: &AtomicBool) -> Result<()> {
+    objc2::rc::autoreleasepool(|_| {
+        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+        let clipboard = NSPasteboard::generalPasteboard();
+        clipboard.clearContents();
+        ensure!(
+            clipboard
+                .setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }),
+            "Copy to clipboard failed"
+        );
+        post_paste(paste, canceled)
+    })
+}
+
+fn post_paste(paste: bool, canceled: &AtomicBool) -> Result<()> {
     if paste {
         ensure!(
             trusted() && can_post_events(),
             "Text copied. Enable Nemo in System Settings → Privacy & Security → Accessibility to paste automatically"
         );
+        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
         eprintln!("Pasting into {}", frontmost_app());
-        thread::sleep(Duration::from_millis(100));
         unsafe {
             let down = CGEventCreateKeyboardEvent(std::ptr::null(), 9, true);
             let up = CGEventCreateKeyboardEvent(std::ptr::null(), 9, false);

@@ -1,5 +1,9 @@
 # Performance on the M5 Max
 
+The [delivery latency update](delivery-latency.md) describes the newer source changes,
+development and installed verification, and paste measurements. The installed-build
+evidence and inference comparisons below describe the October 28 build.
+
 Nemo starts loading the model in the background when microphone capture begins, so recording and loading overlap. It then keeps the model for five idle minutes on this laptop. This uses about 20 GB of resident memory; the model and transcription quality stay unchanged.
 
 A separate [conservative VAD experiment](vad-experiment.md) tested trimming leading and trailing silence before inference. It preserved reference words in the tested speech cases, but the delivery-time gains missed the experiment's retention gate, so VAD was not added to the app. The report records the measurements, limits, and conditions for revisiting that decision.

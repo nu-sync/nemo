@@ -148,6 +148,7 @@ enum Event {
     SettingsChanged(settings::Change),
     QuitIfIdle(mpsc::Sender<bool>),
     RecordingStarted(u64, Result<audio::Start>),
+    RecordingFinished(u64, Result<Vec<u8>>, Instant),
     InputsChanged(Instant, Result<audio::Inputs>),
     Finished(u64, Result<Outcome>),
     WorkerUnloaded,
@@ -156,13 +157,14 @@ enum Job {
     Prepare(Arc<AtomicBool>),
     Download(u64, Arc<AtomicBool>),
     Warm(u64, Arc<AtomicBool>),
-    Transcribe(u64, Vec<u8>, Arc<AtomicBool>),
+    Transcribe(u64, Vec<u8>, Arc<AtomicBool>, Instant),
 }
 
 enum Outcome {
     ModelLoaded,
     ModelDownloaded,
-    Transcript(String),
+    Transcript(String, Instant),
+    Delivered,
 }
 enum WorkKind {
     Warm,
@@ -334,7 +336,7 @@ fn execute() -> Result<()> {
             let text = backend.transcribe(fs::read(file)?, &AtomicBool::new(false))?;
             let text = output::format_transcript(&text, remove_trailing_period);
             if copy || paste {
-                output::deliver(text, paste)?;
+                output::deliver(text, paste, &AtomicBool::new(false))?;
             }
             println!("{text}");
             Ok(())
@@ -378,6 +380,28 @@ fn startup_action(
     } else {
         None
     }
+}
+
+fn start_recording(
+    proxy: tao::event_loop::EventLoopProxy<Event>,
+    id: u64,
+    seconds: u64,
+    microphone: Option<audio::Microphone>,
+) {
+    let requested = Instant::now();
+    thread::spawn(move || {
+        let result = audio::Recording::start(seconds, microphone.as_ref());
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "capture_start",
+                "microphone_start_ms": requested.elapsed().as_secs_f64() * 1000.0,
+                "recording_started": matches!(&result, Ok(audio::Start::Recording(_))),
+                "success": result.is_ok(),
+            })
+        );
+        let _ = proxy.send_event(Event::RecordingStarted(id, result));
+    });
 }
 
 fn run(mut config: Config) -> Result<()> {
@@ -571,10 +595,21 @@ fn run(mut config: Config) -> Result<()> {
                                     .map(|_| Outcome::ModelDownloaded),
                             )
                         }
-                        Job::Transcribe(id, wav, canceled) => (
-                            id,
-                            backend.transcribe(wav, &canceled).map(Outcome::Transcript),
-                        ),
+                        Job::Transcribe(id, wav, canceled, stopped) => {
+                            eprintln!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "inference_started",
+                                    "stop_to_inference_ms": stopped.elapsed().as_secs_f64() * 1000.0,
+                                })
+                            );
+                            (
+                                id,
+                                backend
+                                    .transcribe(wav, &canceled)
+                                    .map(|text| Outcome::Transcript(text, stopped)),
+                            )
+                        }
                     };
                     if result.is_err() {
                         backend.unload();
@@ -920,7 +955,6 @@ fn run(mut config: Config) -> Result<()> {
                                     started: Instant::now(),
                                     canceled: canceled.clone(),
                                 };
-                                let _ = jobs.send(Job::Prepare(canceled));
                                 set_status("Recording");
                                 sounds.play(config.sound_pack, sounds::Cue::Start);
                             }
@@ -934,17 +968,14 @@ fn run(mut config: Config) -> Result<()> {
                                     state = State::Starting { id, canceled };
                                     let seconds = config.max_recording_seconds;
                                     let proxy = recording_proxy.clone();
-                                    thread::spawn(move || {
-                                        let result =
-                                            audio::Recording::start(seconds, Some(&fallback));
-                                        let _ =
-                                            proxy.send_event(Event::RecordingStarted(id, result));
-                                    });
+                                    start_recording(proxy, id, seconds, Some(fallback));
                                 } else {
+                                    canceled.store(true, Ordering::Release);
                                     set_status("Canceled");
                                 }
                             }
                             Err(error) => {
+                                canceled.store(true, Ordering::Release);
                                 state = State::Idle;
                                 set_status(&format!("{error:#}"));
                                 output::sound("Basso");
@@ -962,38 +993,74 @@ fn run(mut config: Config) -> Result<()> {
                 }
                 _ => None,
             },
-            TaoEvent::UserEvent(Event::Finished(id, result)) => {
-                if let State::Working {
-                    id: current,
-                    canceled,
-                    ..
-                } = &state
+            TaoEvent::UserEvent(Event::RecordingFinished(id, result, stopped)) => {
+                if let State::Working { id: current, canceled, .. } = &state
                     && *current == id
                 {
-                    let was_canceled = canceled.load(Ordering::Acquire);
-                    state = State::Idle;
-                    if was_canceled {
+                    if canceled.load(Ordering::Acquire) {
+                        state = State::Idle;
                         set_status("Canceled");
                     } else {
                         match result {
-                            Ok(Outcome::Transcript(text)) => match output::deliver(
-                                output::format_transcript(&text, config.remove_trailing_period),
-                                config.paste,
-                            ) {
-                                Ok(()) => {
-                                    set_status("Transcript delivered");
-                                    sounds.play(config.sound_pack, sounds::Cue::Complete);
-                                }
-                                Err(error) => {
-                                    set_status(&format!("{error:#}"));
-                                    output::sound("Basso");
-                                }
-                            },
-                            Ok(Outcome::ModelLoaded) => set_status("Model loaded"),
-                            Ok(Outcome::ModelDownloaded) => set_status("Model downloaded"),
+                            Ok(wav) => {
+                                let _ = jobs.send(Job::Transcribe(id, wav, canceled.clone(), stopped));
+                                sounds.play(config.sound_pack, sounds::Cue::Stop);
+                            }
                             Err(error) => {
+                                sounds.play(config.sound_pack, sounds::Cue::Stop);
+                                canceled.store(true, Ordering::Release);
+                                state = State::Idle;
                                 set_status(&format!("{error:#}"));
                                 output::sound("Basso");
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            TaoEvent::UserEvent(Event::Finished(id, result)) => {
+                if let State::Working { id: current, canceled, .. } = &state
+                    && *current == id
+                {
+                    let canceled = canceled.clone();
+                    if canceled.load(Ordering::Acquire) {
+                        state = State::Idle;
+                        set_status("Canceled");
+                    } else {
+                        match result {
+                            Ok(Outcome::Transcript(text, stopped)) => {
+                                let proxy = recording_proxy.clone();
+                                let paste = config.paste;
+                                let remove_period = config.remove_trailing_period;
+                                thread::spawn(move || {
+                                    let started = Instant::now();
+                                    let result = output::deliver(
+                                        output::format_transcript(&text, remove_period), paste, &canceled,
+                                    );
+                                    eprintln!("{}", serde_json::json!({
+                                        "event": "delivery",
+                                        "delivery_ms": started.elapsed().as_secs_f64() * 1000.0,
+                                        "stop_to_dispatch_ms": stopped.elapsed().as_secs_f64() * 1000.0,
+                                        "success": result.is_ok(),
+                                    }));
+                                    let _ = proxy.send_event(Event::Finished(id, result.map(|_| Outcome::Delivered)));
+                                });
+                            }
+                            other => {
+                                state = State::Idle;
+                                match other {
+                                    Ok(Outcome::Delivered) => {
+                                        set_status("Transcript delivered");
+                                        sounds.play(config.sound_pack, sounds::Cue::Complete);
+                                    }
+                                    Ok(Outcome::ModelLoaded) => set_status("Model loaded"),
+                                    Ok(Outcome::ModelDownloaded) => set_status("Model downloaded"),
+                                    Err(error) => {
+                                        set_status(&format!("{error:#}"));
+                                        output::sound("Basso");
+                                    }
+                                    Ok(Outcome::Transcript(..)) => unreachable!(),
+                                }
                             }
                         }
                     }
@@ -1124,38 +1191,36 @@ fn run(mut config: Config) -> Result<()> {
                         next_id += 1;
                         let id = next_id;
                         let canceled = Arc::new(AtomicBool::new(false));
+                        let _ = jobs.send(Job::Prepare(canceled.clone()));
                         state = State::Starting { id, canceled };
                         set_status("Opening microphone");
                         let proxy = recording_proxy.clone();
                         let seconds = config.max_recording_seconds;
                         let microphone = config.microphone.clone();
-                        thread::spawn(move || {
-                            let result = audio::Recording::start(seconds, microphone.as_ref());
-                            let _ = proxy.send_event(Event::RecordingStarted(id, result));
-                        });
+                        start_recording(proxy, id, seconds, microphone);
                     }
                     State::Recording {
                         audio, canceled, ..
                     } => {
-                        let recording = audio.finish();
-                        sounds.play(config.sound_pack, sounds::Cue::Stop);
-                        match recording {
-                            Ok(wav) => {
-                                next_id += 1;
-                                let _ = jobs.send(Job::Transcribe(next_id, wav, canceled.clone()));
-                                state = State::Working {
-                                    id: next_id,
-                                    canceled,
-                                    kind: WorkKind::Transcribe,
-                                };
-                                set_status("Transcribing");
-                            }
-                            Err(error) => {
-                                canceled.store(true, Ordering::Release);
-                                set_status(&format!("{error:#}"));
-                                output::sound("Basso");
-                            }
-                        }
+                        let stopped = Instant::now();
+                        next_id += 1;
+                        let id = next_id;
+                        let proxy = recording_proxy.clone();
+                        thread::spawn(move || {
+                            let recording = audio.finish();
+                            eprintln!("{}", serde_json::json!({
+                                "event": "audio_finalized",
+                                "finalization_ms": stopped.elapsed().as_secs_f64() * 1000.0,
+                                "success": recording.is_ok(),
+                            }));
+                            let _ = proxy.send_event(Event::RecordingFinished(id, recording, stopped));
+                        });
+                        state = State::Working {
+                            id,
+                            canceled,
+                            kind: WorkKind::Transcribe,
+                        };
+                        set_status("Transcribing");
                     }
                     State::Working { .. } | State::Starting { .. } => unreachable!(),
                 }

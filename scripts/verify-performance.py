@@ -82,7 +82,8 @@ def phase(args, name, idle_seconds, operation, preload=True):
             'max_recording_seconds = 120\npaste = false\n'
         )
         (data / "config.toml").write_text(config)
-        env = {**os.environ, "NEMO_DATA_DIR": str(data)}
+        env = {**os.environ, "NEMO_DATA_DIR": str(data),
+               "NEMO_APP_PATH": str(data / "Nemo.app")}
         env.pop("NEMO_SPEECH_TIMING", None)
 
         def cli(command, required=True):

@@ -47,7 +47,7 @@ class InstalledVerifierCleanupTests(unittest.TestCase):
         self.doctor_calls = 0
         self.commands = []
 
-    def run_scenario(self, shortcut_during_doctor):
+    def run_scenario(self, shortcut_during_doctor, pipeline_events=()):
         def control(_data, command):
             if command == 'permissions':
                 return json.dumps({'accessibility': True, 'microphone': 'authorized'})
@@ -84,6 +84,9 @@ class InstalledVerifierCleanupTests(unittest.TestCase):
 
         def speech(command, **_kwargs):
             self.assertEqual(command[:3], ['/usr/bin/say', '-v', 'Samantha'])
+            with self.log.open('a') as stream:
+                for event in pipeline_events:
+                    stream.write(json.dumps(event) + '\n')
             return CompletedSpeech()
 
         argv = ['verify-installed.py', '--app', str(self.app), '--data-dir', str(self.data),
@@ -109,6 +112,24 @@ class InstalledVerifierCleanupTests(unittest.TestCase):
         self.assertEqual(report['status'], 'inconclusive')
         self.assertIn('before_stop', report['error'])
         return report
+
+    def test_pipeline_timings_are_retained_without_becoming_model_jobs(self):
+        report = self.run_scenario(shortcut_during_doctor=False, pipeline_events=[
+            {"event": "capture_start", "microphone_start_ms": 165.0},
+            {"event": "audio_finalized", "finalization_ms": 16.0},
+            {"event": "inference_started", "stop_to_inference_ms": 21.0},
+            {"event": "delivery", "delivery_ms": 0.7},
+        ])
+        actual = [{key: value for key, value in event.items() if key != 'observed_monotonic'}
+                  for event in report['pipeline_events']]
+        self.assertEqual(actual, [
+            {"event": "capture_start", "microphone_start_ms": 165.0},
+            {"event": "audio_finalized", "finalization_ms": 16.0},
+            {"event": "inference_started", "stop_to_inference_ms": 21.0},
+            {"event": "delivery", "delivery_ms": 0.7},
+        ])
+        self.assertEqual(report['events'], [])
+        self.assertEqual(self.commands, ['doctor', 'toggle', 'doctor', 'cancel'])
 
     def test_target_mismatch_cancels_the_owned_recording(self):
         report = self.run_scenario(shortcut_during_doctor=False)
