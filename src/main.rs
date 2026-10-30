@@ -603,10 +603,10 @@ fn run(mut config: Config) -> Result<()> {
     let mut next_id = 0;
     let mut last_toggle = Instant::now() - Duration::from_secs(1);
     let shortcut = config.hotkey.clone();
-    let mut render_controls = move |state: &State,
-                                    settings: &settings::Settings,
-                                    inputs: &audio::Inputs,
-                                    config: &Config| {
+    let render_controls = move |state: &State,
+                                settings: &settings::Settings,
+                                inputs: &audio::Inputs,
+                                config: &Config| {
         let active = match state {
             State::Recording { audio, .. } => Some(&audio.microphone),
             _ => None,
@@ -629,7 +629,6 @@ fn run(mut config: Config) -> Result<()> {
             }
         });
 
-        indicator.set_phase(state.indicator_phase());
         let recording = matches!(state, State::Recording { .. });
         toggle_item.set_text(if recording {
             "Stop recording".into()
@@ -643,6 +642,13 @@ fn run(mut config: Config) -> Result<()> {
         cancel_item.set_enabled(!matches!(state, State::Idle));
         warm_item.set_enabled(matches!(state, State::Idle));
         download_item.set_enabled(matches!(state, State::Idle));
+    };
+    let mut animate_indicator = move |state: &State| {
+        indicator.set_phase(state.indicator_phase());
+        indicator.animate(|| match state {
+            State::Recording { audio, .. } => audio.take_level(),
+            _ => 0.0,
+        })
     };
     let set_status = move |message: &str| {
         let normalized = message.replace('\n', " ");
@@ -969,7 +975,7 @@ fn run(mut config: Config) -> Result<()> {
                             ) {
                                 Ok(()) => {
                                     set_status("Transcript delivered");
-                                    output::sound("Glass");
+                                    sounds.play(config.sound_pack, sounds::Cue::Complete);
                                 }
                                 Err(error) => {
                                     set_status(&format!("{error:#}"));
@@ -1008,7 +1014,8 @@ fn run(mut config: Config) -> Result<()> {
                 .min(*started + Duration::from_secs(config.max_recording_seconds)),
             _ => next_permissions_check,
         };
-        *flow = ControlFlow::WaitUntil(deadline);
+        let frame = animate_indicator(&state);
+        *flow = ControlFlow::WaitUntil(frame.map_or(deadline, |frame| frame.min(deadline)));
         let Some(action) = action else {
             return;
         };
@@ -1162,12 +1169,18 @@ fn run(mut config: Config) -> Result<()> {
             &inputs,
             &config,
         );
+        let frame = animate_indicator(if matches!(*flow, ControlFlow::Exit) {
+            &State::Idle
+        } else {
+            &state
+        });
         if !matches!(*flow, ControlFlow::Exit) {
-            *flow = ControlFlow::WaitUntil(match &state {
+            let deadline = match &state {
                 State::Recording { started, .. } => next_permissions_check
                     .min(*started + Duration::from_secs(config.max_recording_seconds)),
                 _ => next_permissions_check,
-            });
+            };
+            *flow = ControlFlow::WaitUntil(frame.map_or(deadline, |frame| frame.min(deadline)));
         }
     });
 }

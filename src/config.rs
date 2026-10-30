@@ -228,6 +228,8 @@ mod tests {
         for (value, expected) in [
             ("handy_marimba", crate::sounds::SoundPack::HandyMarimba),
             ("macos_recording", crate::sounds::SoundPack::MacosRecording),
+            ("minimal", crate::sounds::SoundPack::Minimal),
+            ("chime", crate::sounds::SoundPack::Chime),
         ] {
             let config: Config = toml::from_str(&format!("sound_pack = '{value}'")).unwrap();
             assert_eq!(config.sound_pack, expected);
