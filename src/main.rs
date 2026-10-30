@@ -13,7 +13,7 @@ mod sounds;
 mod startup;
 mod storage;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::{
@@ -130,7 +130,8 @@ enum Event {
     Action(String),
     SettingsChanged(settings::Change),
     QuitIfIdle(mpsc::Sender<bool>),
-    RecordingStarted(u64, Result<audio::Recording>),
+    RecordingStarted(u64, Result<audio::Start>),
+    InputsChanged(Instant, Result<audio::Inputs>),
     Finished(u64, Result<Outcome>),
     WorkerUnloaded,
 }
@@ -298,7 +299,6 @@ fn execute() -> Result<()> {
             Ok(())
         }
         Command::Doctor => {
-            use cpal::traits::{DeviceTrait, HostTrait};
             println!("Config: {}", config::path().display());
             println!("Shortcut: {}", config.hotkey);
             println!(
@@ -335,14 +335,31 @@ fn execute() -> Result<()> {
             println!("Foreground app: {}", output::frontmost_app());
             let (sender, receiver) = mpsc::channel();
             thread::spawn(move || {
-                let result = cpal::default_host()
-                    .default_input_device()
-                    .context("No microphone")
-                    .and_then(|device| Ok(format!("{:?}", device.description()?)));
-                let _ = sender.send(result);
+                let _ = sender.send(audio::Inputs::current());
             });
             match receiver.recv_timeout(Duration::from_secs(2)) {
-                Ok(result) => println!("Microphone: {}", result?),
+                Ok(Ok(inputs)) => {
+                    println!(
+                        "Saved microphone: {}",
+                        config
+                            .microphone
+                            .as_ref()
+                            .map(|d| d.name.as_str())
+                            .unwrap_or("System default")
+                    );
+                    match inputs.resolve(config.microphone.as_ref()) {
+                        Ok((device, false)) => println!("Microphone: {}", device.name),
+                        Ok((device, true)) => println!(
+                            "Microphone unavailable; fallback requires confirmation: {}",
+                            device.name
+                        ),
+                        Err(error) => println!("Microphone: {error}"),
+                    }
+                    for device in inputs.devices {
+                        println!("Input device: {} ({})", device.name, device.id);
+                    }
+                }
+                Ok(Err(error)) => println!("Microphone: {error:#}"),
                 Err(_) => println!("Microphone: macOS is waiting; check its permission dialog"),
             }
             println!(
@@ -419,10 +436,12 @@ fn run(mut config: Config) -> Result<()> {
     let settings_item = MenuItem::new("Settings…", true, None);
     let config_item = MenuItem::new("Open configuration", true, None);
     let permissions_item = MenuItem::new("Accessibility settings", true, None);
+    let input_item = MenuItem::new("Checking microphones…", false, None);
     let microphone_item = MenuItem::new("Microphone settings", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
     menu.append_items(&[
         &status_item,
+        &input_item,
         &toggle_item,
         &cancel_item,
         &warm_item,
@@ -591,7 +610,32 @@ fn run(mut config: Config) -> Result<()> {
     let mut next_id = 0;
     let mut last_toggle = Instant::now() - Duration::from_secs(1);
     let shortcut = config.hotkey.clone();
-    let mut render_controls = move |state: &State| {
+    let mut render_controls = move |state: &State,
+                                    settings: &settings::Settings,
+                                    inputs: &audio::Inputs,
+                                    config: &Config| {
+        let active = match state {
+            State::Recording { audio, .. } => Some(&audio.microphone),
+            _ => None,
+        };
+        settings.set_inputs(
+            inputs,
+            config.microphone.as_ref(),
+            active,
+            !matches!(state, State::Idle),
+        );
+        input_item.set_text(if let Some(active) = active {
+            format!("Input: {}", active.name)
+        } else {
+            match inputs.resolve(config.microphone.as_ref()) {
+                Ok((device, false)) => format!("Input: {}", device.name),
+                Ok((_, true)) => {
+                    format!("{} unavailable", config.microphone.as_ref().unwrap().name)
+                }
+                Err(_) => "No microphone available".into(),
+            }
+        });
+
         indicator.set_phase(state.indicator_phase());
         let recording = matches!(state, State::Recording { .. });
         toggle_item.set_text(if recording {
@@ -621,6 +665,9 @@ fn run(mut config: Config) -> Result<()> {
         let _ = tray.set_tooltip(Some(format!("Nemo — {message}")));
     };
 
+    let mut inputs = audio::Inputs::default();
+    let mut scanning_inputs = false;
+    let input_proxy = event_loop.create_proxy();
     let mut next_permissions_check = Instant::now();
     let mut last_permissions = None;
     let store = model::Store::managed();
@@ -637,6 +684,20 @@ fn run(mut config: Config) -> Result<()> {
     event_loop.run(move |event, _, flow| {
         let _keep_alive = (&server, &hotkeys);
         if Instant::now() >= next_permissions_check {
+            if !scanning_inputs {
+                scanning_inputs = true;
+                let proxy = input_proxy.clone();
+                thread::spawn(move || { let scanned_at = Instant::now(); let _ = proxy.send_event(Event::InputsChanged(scanned_at, audio::Inputs::current())); });
+            }
+            if let State::Recording { audio, canceled, .. } = &state
+                && let Some(error) = audio.error()
+            {
+                canceled.store(true, Ordering::Release);
+                state = State::Idle;
+                set_status(&format!("Microphone failed: {error}. Recording discarded"), [230,80,60]);
+                output::sound("Basso");
+            }
+
             if settings.window.is_visible() { settings.refresh_startup(); }
             let observed = permissions::Snapshot::current();
             let changed = last_permissions.replace(observed) != Some(observed);
@@ -657,6 +718,36 @@ fn run(mut config: Config) -> Result<()> {
             next_permissions_check = Instant::now() + Duration::from_secs(2);
         }
         let action = match event {
+            TaoEvent::UserEvent(Event::InputsChanged(scanned_at, result)) => {
+                scanning_inputs = false;
+                match result {
+                    Ok(observed) => {
+                        if let State::Recording { audio, started, canceled } = &state
+                            && scanned_at >= *started
+                            && !observed.devices.iter().any(|d| d.id == audio.microphone.id)
+                        {
+                            canceled.store(true, Ordering::Release);
+                            let message = format!("{} disconnected. Recording discarded", audio.microphone.name);
+                            state = State::Idle;
+                            set_status(&message, [230,80,60]);
+                            output::sound("Basso");
+                        }
+                        inputs = observed;
+                    }
+                    Err(error) => { settings.set_error("Could not list microphones."); eprintln!("Cannot list microphones: {error:#}"); }
+                }
+                None
+            }
+            TaoEvent::UserEvent(Event::SettingsChanged(settings::Change::Microphone(microphone))) => {
+                if matches!(state, State::Idle) {
+                    match Config::update(|saved| { saved.microphone = microphone.clone(); Ok(()) }) {
+                        Ok(_) => { config.microphone = microphone; settings.set_error(""); }
+                        Err(error) => { settings.set_error("Could not save microphone."); eprintln!("Cannot save microphone: {error:#}"); }
+                    }
+                }
+                None
+            }
+
             TaoEvent::UserEvent(Event::QuitIfIdle(reply)) => {
                 let idle = matches!(state, State::Idle);
                 let _ = reply.send(idle);
@@ -709,7 +800,19 @@ fn run(mut config: Config) -> Result<()> {
                     state = State::Idle;
                     if was_canceled { set_status("Canceled", [160,160,160]); }
                     else { match result {
-                        Ok(audio) => { let canceled = canceled.clone(); state = State::Recording { audio, started: Instant::now(), canceled: canceled.clone() }; let _ = jobs.send(Job::Prepare(canceled)); set_status("Recording", [230,55,55]); sounds.play(config.sound_pack, sounds::Cue::Start); }
+                        Ok(audio::Start::Recording(audio)) => { let canceled = canceled.clone(); state = State::Recording { audio, started: Instant::now(), canceled: canceled.clone() }; let _ = jobs.send(Job::Prepare(canceled)); set_status("Recording", [230,55,55]); sounds.play(config.sound_pack, sounds::Cue::Start); }
+                        Ok(audio::Start::ConfirmFallback(fallback)) => {
+                            let selected = config.microphone.as_ref().map(|d| d.name.as_str()).unwrap_or("Microphone");
+                            if settings.confirm_fallback(selected, &fallback) {
+                                state = State::Starting { id, canceled };
+                                let seconds = config.max_recording_seconds;
+                                let proxy = recording_proxy.clone();
+                                thread::spawn(move || {
+                                    let result = audio::Recording::start(seconds, Some(&fallback));
+                                    let _ = proxy.send_event(Event::RecordingStarted(id, result));
+                                });
+                            } else { set_status("Canceled", [160,160,160]); }
+                        }
                         Err(error) => { state = State::Idle; set_status(&format!("{error:#}"), [230,80,60]); output::sound("Basso"); }
                     }}
                 }
@@ -738,7 +841,7 @@ fn run(mut config: Config) -> Result<()> {
             TaoEvent::UserEvent(Event::WorkerUnloaded) => { if matches!(state, State::Idle) { set_status("Ready · model unloaded", [160,160,160]); } None }
             _ => None,
         };
-        render_controls(&state);
+        render_controls(&state, &settings, &inputs, &config);
         let deadline = match &state {
             State::Recording { started, .. } => next_permissions_check.min(*started + Duration::from_secs(config.max_recording_seconds)),
             _ => next_permissions_check,
@@ -793,8 +896,9 @@ fn run(mut config: Config) -> Result<()> {
                         set_status("Opening microphone", [230,170,30]);
                         let proxy = recording_proxy.clone();
                         let seconds = config.max_recording_seconds;
+                        let microphone = config.microphone.clone();
                         thread::spawn(move || {
-                            let result = audio::Recording::start(seconds);
+                            let result = audio::Recording::start(seconds, microphone.as_ref());
                             let _ = proxy.send_event(Event::RecordingStarted(id, result));
                         });
                     },
@@ -816,7 +920,7 @@ fn run(mut config: Config) -> Result<()> {
             }
             _ => {}
         }
-        render_controls(if matches!(*flow, ControlFlow::Exit) { &State::Idle } else { &state });
+        render_controls(if matches!(*flow, ControlFlow::Exit) { &State::Idle } else { &state }, &settings, &inputs, &config);
         if !matches!(*flow, ControlFlow::Exit) {
             *flow = ControlFlow::WaitUntil(match &state {
                 State::Recording { started, .. } => next_permissions_check.min(*started + Duration::from_secs(config.max_recording_seconds)),
