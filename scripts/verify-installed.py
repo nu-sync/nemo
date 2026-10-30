@@ -74,7 +74,7 @@ def observe_idle(args, report, save, status, runtime_pids):
         baseline = now - initial_age
         report["baseline_resets"].append({"source": "initial Ready log mtime proxy",
             "monotonic": baseline, "initial_age_seconds": initial_age})
-    report["timing_note"] = ("Initial Ready mtime is approximately 100ms after backend completion; "
+    report["timing_note"] = ("Initial Ready mtime is a proxy after worker completion and delivery; "
                              "fresh transcription baselines use monotonic event receipt. "
                              "299–305s acceptance accounts for this offset and one-second polling.")
     epoch_started = now
@@ -263,6 +263,11 @@ def main():
                 if line.startswith("Pasting into "):
                     report["paste_destination_log"] = line.removeprefix("Pasting into ")
                 continue
+            if isinstance(event, dict) and event.get("event") in {
+                "capture_start", "audio_finalized", "inference_started", "delivery"
+            }:
+                report.setdefault("pipeline_events", []).append(
+                    {"observed_monotonic": time.monotonic(), **event})
             if isinstance(event, dict) and event.get("event") in {"model_load", "transcription"}:
                 fresh.append(event)
                 report["events"].append({"observed_monotonic": time.monotonic(), **event})

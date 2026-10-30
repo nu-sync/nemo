@@ -102,7 +102,7 @@ clipboard assertion or a `Pasting into ...` log does not replace a visible text
 check. If focus changed, report the actual destination and the coverage gap; never
 claim TextEdit paste when the text went elsewhere. The helper does not press Send.
 Even `paste_target_log_matches=true` does not establish visible insertion: Nemo
-logs the destination about 100 ms before emitting the paste keys. Keep TextEdit
+logs the destination before emitting paste keys, without a fixed delay. Keep TextEdit
 foreground through completion and retain the actual native UI text observation.
 
 For a warm follow-up, run the second command in the existing session before its
@@ -133,7 +133,8 @@ fresh transcription. A genuine quiet interval is necessary; status polling is sa
 The worker's timeout starts at backend job completion, slightly before UI Ready
 and paste finish. Fresh telemetry observations use a monotonic clock. When joining
 an existing session, the helper can use the last Ready log modification time as a
-proxy, about 100 ms after completion. JSON labels this basis, resets, PID epochs,
+proxy after delivery completion; its offset from worker completion is not fixed.
+JSON labels this basis, resets, PID epochs,
 last-loaded/first-absent observations, and actual observation duration. Report the
 299–305-second tolerance and any initial unobserved span rather than claiming
 millisecond accuracy or uninterrupted sampling you did not perform.
