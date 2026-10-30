@@ -1,1 +1,2 @@
 assets/licenses/Rust-dependencies.txt linguist-generated=true
+assets/licenses/** -whitespace
