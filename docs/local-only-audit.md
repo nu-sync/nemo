@@ -33,6 +33,13 @@ The menu verifies already-cached weights locally. If files disappear or are
 damaged after startup, use `nemo model download` to repair them, then reopen Nemo;
 the restricted controller cannot grant itself a new external-network capability.
 
+The subsequent [lifecycle model](../verification/offline/README.md) exposes two
+limits to stronger cleanup claims: abrupt helper termination can orphan curl,
+and cancellation after model publication can retain a helper instead of retiring it.
+These are modeled, source-backed failure paths, not demonstrated audio leaks.
+The full diagnostic command deliberately returns findings; the narrower confinement
+invariants pass under the documented OS assumptions.
+
 Building and installing from source is a separate network-capable workflow:
 Cargo, Homebrew, GitHub/submodules and signing timestamps may contact their servers.
 An unbundled bare `nemo` can bootstrap installation. These development/install
