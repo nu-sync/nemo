@@ -5,7 +5,10 @@ use cpal::{
 };
 use std::{
     io::Cursor,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -56,11 +59,30 @@ pub enum Start {
     ConfirmFallback(Microphone),
 }
 
+#[derive(Default)]
+struct LevelMeter(AtomicU32);
+
+impl LevelMeter {
+    fn publish(&self, samples: &[f32]) {
+        if samples.is_empty() {
+            return;
+        }
+        let power = samples.iter().map(|sample| sample * sample).sum::<f32>();
+        let rms = (power / samples.len() as f32).sqrt().clamp(0.0, 1.0);
+        self.0.fetch_max(rms.to_bits(), Ordering::Relaxed);
+    }
+
+    fn take(&self) -> f32 {
+        f32::from_bits(self.0.swap(0, Ordering::Relaxed))
+    }
+}
+
 pub struct Recording {
     stream: cpal::Stream,
     samples: Arc<Mutex<Vec<f32>>>,
     error: Arc<Mutex<Option<String>>>,
     sample_rate: u32,
+    level: Arc<LevelMeter>,
     pub microphone: Microphone,
 }
 
@@ -81,11 +103,18 @@ impl Recording {
         let config: cpal::StreamConfig = supported.clone().into();
         let samples = Arc::new(Mutex::new(Vec::new()));
         let error = Arc::new(Mutex::new(None));
+        let level = Arc::new(LevelMeter::default());
         let cap = sample_rate as usize * max_seconds as usize;
         let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => build::<f32>(&device, &config, &samples, &error, cap)?,
-            cpal::SampleFormat::I16 => build::<i16>(&device, &config, &samples, &error, cap)?,
-            cpal::SampleFormat::U16 => build::<u16>(&device, &config, &samples, &error, cap)?,
+            cpal::SampleFormat::F32 => {
+                build::<f32>(&device, &config, &samples, &error, &level, cap)?
+            }
+            cpal::SampleFormat::I16 => {
+                build::<i16>(&device, &config, &samples, &error, &level, cap)?
+            }
+            cpal::SampleFormat::U16 => {
+                build::<u16>(&device, &config, &samples, &error, &level, cap)?
+            }
             format => bail!("Unsupported microphone sample format: {format}"),
         };
         stream.play()?;
@@ -95,7 +124,12 @@ impl Recording {
             samples,
             error,
             sample_rate,
+            level,
         }))
+    }
+
+    pub fn take_level(&self) -> f32 {
+        self.level.take()
     }
 
     pub fn error(&self) -> Option<String> {
@@ -125,6 +159,7 @@ fn build<T>(
     config: &cpal::StreamConfig,
     samples: &Arc<Mutex<Vec<f32>>>,
     error: &Arc<Mutex<Option<String>>>,
+    level: &Arc<LevelMeter>,
     cap: usize,
 ) -> Result<cpal::Stream>
 where
@@ -133,15 +168,18 @@ where
 {
     let samples = samples.clone();
     let error = error.clone();
+    let level = level.clone();
     let channels = config.channels as usize;
     Ok(device.build_input_stream(
         config,
         move |data: &[T], _| {
             let mut samples = samples.lock().unwrap();
-            let remaining = cap.saturating_sub(samples.len());
+            let start = samples.len();
+            let remaining = cap.saturating_sub(start);
             samples.extend(data.chunks_exact(channels).take(remaining).map(|frame| {
                 frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32
             }));
+            level.publish(&samples[start..]);
         },
         move |err| {
             *error.lock().unwrap() = Some(err.to_string());
@@ -258,12 +296,35 @@ mod tests {
             assert_eq!(recording.microphone.id, default.id);
             std::thread::sleep(std::time::Duration::from_millis(400));
             assert!(recording.error().is_none(), "{:?}", recording.error());
-            assert!(
-                !recording.samples.lock().unwrap().is_empty(),
-                "Input stream produced no samples"
-            );
+            {
+                let samples = recording.samples.lock().unwrap();
+                assert!(!samples.is_empty(), "Input stream produced no samples");
+                let level = recording.take_level();
+                assert!(level.is_finite() && (0.0..=1.0).contains(&level));
+                if samples.iter().any(|sample| sample.abs() > 0.0) {
+                    assert!(
+                        level > 0.0,
+                        "Captured audio never reached the display meter"
+                    );
+                }
+            }
             drop(recording);
         }
+    }
+
+    #[test]
+    fn meter_reports_captured_power_and_retains_activity_between_display_frames() {
+        let meter = LevelMeter::default();
+        meter.publish(&[0.0; 8]);
+        assert_eq!(meter.take(), 0.0);
+        meter.publish(&[-0.25, 0.25, -0.25, 0.25]);
+        meter.publish(&[0.0; 8]);
+        assert_eq!(meter.take(), 0.25);
+        assert_eq!(meter.take(), 0.0);
+        meter.publish(&[]);
+        assert_eq!(meter.take(), 0.0);
+        meter.publish(&[-2.0, 2.0]);
+        assert_eq!(meter.take(), 1.0);
     }
 
     #[test]

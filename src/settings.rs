@@ -62,6 +62,10 @@ define_class!(
         fn preview_stop(&self, _sender: &NSButton) {
             (self.ivars().on_change)(Change::PreviewSound(Cue::Stop));
         }
+        #[unsafe(method(previewComplete:))]
+        fn preview_complete(&self, _sender: &NSButton) {
+            (self.ivars().on_change)(Change::PreviewSound(Cue::Complete));
+        }
         #[unsafe(method(toggleStartup:))]
         fn toggle_startup(&self, sender: &NSButton) {
             (self.ivars().on_change)(Change::LaunchOnStartup(sender.state() == 1));
@@ -160,7 +164,7 @@ impl Settings {
         };
         preview_start.setFrame(NSRect::new(
             NSPoint::new(122.0, 160.0),
-            NSSize::new(106.0, 30.0),
+            NSSize::new(96.0, 30.0),
         ));
         let preview_stop = unsafe {
             NSButton::buttonWithTitle_target_action(
@@ -171,8 +175,20 @@ impl Settings {
             )
         };
         preview_stop.setFrame(NSRect::new(
-            NSPoint::new(232.0, 160.0),
-            NSSize::new(106.0, 30.0),
+            NSPoint::new(222.0, 160.0),
+            NSSize::new(96.0, 30.0),
+        ));
+        let preview_complete = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Play finish"),
+                Some(&action),
+                Some(sel!(previewComplete:)),
+                mtm,
+            )
+        };
+        preview_complete.setFrame(NSRect::new(
+            NSPoint::new(322.0, 160.0),
+            NSSize::new(116.0, 30.0),
         ));
         let microphone_label = NSTextField::labelWithString(&NSString::from_str("Microphone"), mtm);
         microphone_label.setFrame(NSRect::new(
@@ -207,6 +223,7 @@ impl Settings {
         view.addSubview(&sound_pack);
         view.addSubview(&preview_start);
         view.addSubview(&preview_stop);
+        view.addSubview(&preview_complete);
         view.addSubview(&microphone_label);
         view.addSubview(&microphone);
         view.addSubview(&input_status);

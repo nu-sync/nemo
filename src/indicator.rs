@@ -7,7 +7,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSDictionary, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use std::{
-    cell::Cell,
+    cell::RefCell,
     path::Path,
     time::{Duration, Instant},
 };
@@ -21,6 +21,38 @@ use tao::{
 };
 
 const SIZE: NSSize = NSSize::new(168.0, 44.0);
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const WAVE_BARS: usize = 32;
+
+struct Frame {
+    phase: Phase,
+    levels: [f32; WAVE_BARS],
+    rotation: f64,
+}
+
+impl Frame {
+    fn new(phase: Phase) -> Self {
+        Self {
+            phase,
+            levels: [0.0; WAVE_BARS],
+            rotation: 0.0,
+        }
+    }
+
+    fn advance(&mut self, level: f32, elapsed: Duration) {
+        match self.phase {
+            Phase::Recording => {
+                let target = (level * 12.0).clamp(0.0, 1.0).sqrt();
+                let previous = self.levels[WAVE_BARS - 1];
+                let smoothed = target.max(previous * 0.72);
+                self.levels.rotate_left(1);
+                self.levels[WAVE_BARS - 1] = smoothed;
+            }
+            Phase::Transcribing => self.rotation = (elapsed.as_secs_f64() / 0.8 * 360.0) % 360.0,
+            Phase::Hidden => {}
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -48,7 +80,7 @@ define_class!(
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[ivars = Cell<Phase>]
+    #[ivars = RefCell<Frame>]
     struct IndicatorView;
 
     unsafe impl NSObjectProtocol for IndicatorView {}
@@ -66,16 +98,25 @@ define_class!(
             NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.16).setStroke();
             pill.setLineWidth(1.0);
             pill.stroke();
-            match self.ivars().get() {
+            let frame = self.ivars().borrow();
+            match frame.phase {
                 Phase::Recording => {
                     NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.29, 0.32, 1.0).setFill();
                     NSBezierPath::bezierPathWithOvalInRect(NSRect::new(NSPoint::new(19.0, 18.0), NSSize::new(8.0, 8.0))).fill();
+                    for (i, level) in frame.levels.iter().enumerate() {
+                        let height = 3.0 + f64::from(*level) * 21.0;
+                        NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.35 + i as f64 / (WAVE_BARS - 1) as f64 * 0.65).setFill();
+                        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                            NSRect::new(NSPoint::new(38.0 + i as f64 * 3.5, 22.0 - height / 2.0), NSSize::new(2.0, height)),
+                            1.0, 1.0,
+                        ).fill();
+                    }
                 }
                 Phase::Transcribing => {
                     NSColor::colorWithSRGBRed_green_blue_alpha(0.70, 0.78, 1.0, 1.0).setStroke();
                     let arc = NSBezierPath::bezierPath();
                     arc.setLineWidth(2.0);
-                    arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle(NSPoint::new(23.0, 22.0), 5.0, 40.0, 320.0);
+                    arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle(NSPoint::new(23.0, 22.0), 5.0, 40.0 - frame.rotation, 320.0 - frame.rotation);
                     arc.stroke();
                 }
                 Phase::Hidden => {}
@@ -89,6 +130,8 @@ pub struct Indicator {
     view: Retained<IndicatorView>,
     label: Retained<NSTextField>,
     phase: Phase,
+    started: Instant,
+    next_frame: Instant,
 }
 
 impl Indicator {
@@ -113,7 +156,7 @@ impl Indicator {
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
                 | NSWindowCollectionBehavior::Stationary,
         );
-        let view = IndicatorView::alloc(mtm).set_ivars(Cell::new(Phase::Hidden));
+        let view = IndicatorView::alloc(mtm).set_ivars(RefCell::new(Frame::new(Phase::Hidden)));
         let view: Retained<IndicatorView> =
             unsafe { msg_send![super(view), initWithFrame: bounds] };
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
@@ -132,6 +175,8 @@ impl Indicator {
             view,
             label,
             phase: Phase::Hidden,
+            started: Instant::now(),
+            next_frame: Instant::now(),
         }
     }
 
@@ -139,6 +184,10 @@ impl Indicator {
         if self.phase == phase {
             return;
         }
+        self.started = Instant::now();
+        self.next_frame = self.started;
+        *self.view.ivars().borrow_mut() = Frame::new(phase);
+        self.label.setHidden(phase != Phase::Transcribing);
         if phase == Phase::Hidden {
             self.panel.orderOut(None);
         } else {
@@ -159,11 +208,26 @@ impl Indicator {
                 Phase::Transcribing => "Transcribing",
                 Phase::Hidden => unreachable!(),
             }));
-            self.view.ivars().set(phase);
             self.view.setNeedsDisplay(true);
             self.panel.orderFrontRegardless();
         }
         self.phase = phase;
+    }
+
+    pub fn animate(&mut self, level: impl FnOnce() -> f32) -> Option<Instant> {
+        if self.phase == Phase::Hidden {
+            return None;
+        }
+        let now = Instant::now();
+        if now >= self.next_frame {
+            self.view
+                .ivars()
+                .borrow_mut()
+                .advance(level(), now - self.started);
+            self.view.setNeedsDisplay(true);
+            self.next_frame = now + FRAME_INTERVAL;
+        }
+        Some(self.next_frame)
     }
 
     fn verify(&self, phase: Phase) -> Result<()> {
@@ -185,8 +249,8 @@ impl Indicator {
         );
         match phase {
             Phase::Recording => ensure!(
-                self.label.stringValue().to_string() == "Recording",
-                "Recording label missing"
+                self.label.isHidden() && self.view.ivars().borrow().phase == Phase::Recording,
+                "Recording waveform missing"
             ),
             Phase::Transcribing => ensure!(
                 self.label.stringValue().to_string() == "Transcribing",
@@ -248,6 +312,7 @@ pub fn preview(output: Option<&Path>) -> Result<()> {
     let mut indicator = Indicator::new();
     indicator.verify(Phase::Hidden)?;
     let mut next = Instant::now();
+    let mut frame_step = 0;
     let phases = [Phase::Recording, Phase::Transcribing, Phase::Hidden];
     let mut step = 0;
     let mut result = Ok(());
@@ -260,9 +325,32 @@ pub fn preview(output: Option<&Path>) -> Result<()> {
             return;
         }
         if Instant::now() < next {
-            *flow = ControlFlow::WaitUntil(next);
+            let elapsed = indicator.started.elapsed().as_secs_f32();
+            let level = if elapsed < 1.0 {
+                (elapsed * 18.0).sin().abs() * 0.06
+            } else {
+                0.0
+            };
+            let animation = indicator.animate(|| level);
+            if frame_step < 2 && elapsed >= 0.5 + frame_step as f32 * 0.6 {
+                if let Some(output) = output {
+                    let name = match indicator.phase {
+                        Phase::Recording => "recording",
+                        Phase::Transcribing => "transcribing",
+                        Phase::Hidden => unreachable!(),
+                    };
+                    if let Err(error) =
+                        indicator.snapshot(&output.join(format!("{name}-{}.png", frame_step + 1)))
+                    {
+                        result = Err(error);
+                    }
+                }
+                frame_step += 1;
+            }
+            *flow = ControlFlow::WaitUntil(animation.map_or(next, |frame| frame.min(next)));
             return;
         }
+        frame_step = 0;
         let phase = phases[step];
         step += 1;
         result = (|| {
@@ -270,6 +358,20 @@ pub fn preview(output: Option<&Path>) -> Result<()> {
                 frontmost() == Some(original_app),
                 "Foreground app changed during preview"
             );
+            if let Some(output) = output
+                && step > 1
+            {
+                let previous = if phase == Phase::Transcribing {
+                    "recording"
+                } else {
+                    "transcribing"
+                };
+                ensure!(
+                    std::fs::read(output.join(format!("{previous}-1.png")))?
+                        != std::fs::read(output.join(format!("{previous}-2.png")))?,
+                    "{previous} animation produced identical frames"
+                );
+            }
             indicator.set_phase(phase);
             indicator.set_phase(phase);
             indicator.verify(phase)?;
@@ -291,10 +393,17 @@ pub fn preview(output: Option<&Path>) -> Result<()> {
             *flow = ControlFlow::Exit;
         } else {
             next = Instant::now() + Duration::from_secs(2);
-            *flow = ControlFlow::WaitUntil(next);
+            let frame = indicator.animate(|| 0.0);
+            *flow = ControlFlow::WaitUntil(frame.map_or(next, |frame| frame.min(next)));
         }
     });
     indicator.set_phase(Phase::Hidden);
+    ensure!(
+        indicator
+            .animate(|| panic!("Hidden indicator sampled audio"))
+            .is_none(),
+        "Hidden indicator scheduled animation"
+    );
     ensure!(
         frontmost() == Some(original_app),
         "Foreground app changed after hiding the indicator"
@@ -305,6 +414,31 @@ pub fn preview(output: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waveform_shows_audio_history_then_settles_to_silence() {
+        let mut frame = Frame::new(Phase::Recording);
+        frame.advance(0.04, Duration::ZERO);
+        let peak = frame.levels[WAVE_BARS - 1];
+        assert!(peak > 0.5);
+        frame.advance(0.0, FRAME_INTERVAL);
+        assert_eq!(frame.levels[WAVE_BARS - 2], peak);
+        assert!(frame.levels[WAVE_BARS - 1] < peak);
+        for _ in 0..100 {
+            frame.advance(0.0, FRAME_INTERVAL);
+        }
+        assert!(frame.levels.iter().all(|level| *level < 0.001));
+        assert_eq!(Frame::new(Phase::Recording).levels, [0.0; WAVE_BARS]);
+    }
+
+    #[test]
+    fn spinner_rotates_with_elapsed_time_and_wraps_each_cycle() {
+        let mut frame = Frame::new(Phase::Transcribing);
+        frame.advance(0.0, Duration::from_millis(200));
+        assert_eq!(frame.rotation, 90.0);
+        frame.advance(0.0, Duration::from_millis(1000));
+        assert_eq!(frame.rotation, 90.0);
+    }
 
     #[test]
     fn indicator_sits_above_the_dock_on_the_visible_screen() {

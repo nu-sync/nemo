@@ -37,6 +37,8 @@ Choose **Settings…** in the menu (or run `nemo settings`) to toggle **Remove t
 
 **Launch on startup** opens Nemo when you log in to your Mac. It uses macOS Login Items and reflects changes made in System Settings. If approval is required, enabling it opens Login Items. This setting is available when running Nemo.app.
 
+**Sound pack** selects Handy Marimba, macOS Recording, Minimal, or Chime for recording start, recording stop, and successful transcript delivery. **Play start**, **Play stop**, and **Play finish** preview the selected pack. Changes save immediately. The macOS pack uses Glass for completion; the other packs have matching completion cues. In `config.toml`, the values are `handy_marimba` (default), `macos_recording`, `minimal`, and `chime`.
+
 For other preferences, use **Open configuration** in the menu, or:
 
 ```sh
@@ -128,7 +130,7 @@ See [release preparation](releasing.md) for source publication and signed app di
 cargo run --locked -- preview-indicator --output artifacts/indicator-preview
 ```
 
-This previews Recording → Transcribing → hidden using the same native panel as dictation, saves PNGs of both visible states, and checks panel visibility, labels, click-through behavior, and foreground-app preservation. It exits automatically without starting the daemon, opening the microphone, playing sounds, loading a model, or changing configuration. Omit `--output` to preview without saving images. Use this check when an audible dictation test would be disruptive; it does not verify the microphone, shortcut, transcription, or paste path.
+This previews Recording → Transcribing → hidden using the same native panel as dictation, feeds a synthetic sound envelope into the recording waveform, saves initial and successive PNGs of both visible states, and checks that their animation frames differ. It also checks panel visibility, the Transcribing label, click-through behavior, foreground-app preservation, and that hidden panels stop scheduling animation. It exits automatically without starting the daemon, opening the microphone, playing sounds, loading a model, or changing configuration. Omit `--output` to preview without saving images. Use this check when an audible dictation test would be disruptive; it does not verify the microphone, shortcut, transcription, or paste path.
 
 ### Safe upgrades
 
@@ -174,7 +176,9 @@ Use the project skill [$verify-nemo](../.agents/skills/verify-nemo/SKILL.md) to 
 
 The app and `xtask` share the Rust native builder, packaging, and installer library; the developer command does not wrap Python or Bash scripts. The main event loop owns the recording state, indicator, and all menu updates. Microphone opening and model work happen off the UI thread. Starting, recording, and working are explicit states; busy toggles cannot create overlapping inference jobs. Working records the job kind so only transcription shows the processing indicator. Cancellation marks a job before stopping its owned subprocess, so a late result cannot paste text. One authenticated loopback server serves the daemon's requests; the control socket is in a private directory. No window takes focus during dictation.
 
-The indicator is a borderless, nonactivating AppKit panel with click-through behavior, positioned above the Dock on the pointer's display. Recording appears only after microphone startup succeeds; stopping switches to Transcribing, and completion, cancellation, errors, and shutdown hide it. It joins Spaces and full-screen apps. This adapts [Handy's documented overlay](https://handy.computer/docs/advanced#overlay-position) and its macOS [panel](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/overlay.rs#L450-L485), [placement](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/overlay.rs#L180-L277), and [stop transition](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/actions.rs#L640-L652) at commit `7bfb2e2c934b798bcf6e3627653aed2439996f89`. Handy uses a Tauri webview; Nemo draws its own native pill without reusing Handy code or assets. Handy's live docs describe position and visibility together, while that source revision separates overlay style and position.
+The indicator is a borderless, nonactivating AppKit panel with click-through behavior, positioned above the Dock on the pointer's display. Recording appears only after microphone startup succeeds and shows a scrolling history of the captured mono audio's RMS level. Levels cross from the audio callback through an atomic peak meter, so UI reads do not lock the recording buffer. The display smooths falling levels and returns to a quiet baseline during silence; it does not classify speech or discard audio. Stopping switches to Transcribing with a continuously rotating spinner. Animation redraws run at most once every 33 ms while visible; completion, cancellation, errors, and shutdown hide the panel and stop animation wakeups. It joins Spaces and full-screen apps. This adapts [Handy's documented overlay](https://handy.computer/docs/advanced#overlay-position) and its macOS [panel](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/overlay.rs#L450-L485), [placement](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/overlay.rs#L180-L277), and [stop transition](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src-tauri/src/actions.rs#L640-L652) at commit `7bfb2e2c934b798bcf6e3627653aed2439996f89`. Handy uses a Tauri webview; Nemo draws its own native pill without reusing Handy code or assets. Handy's live docs describe position and visibility together, while that source revision separates overlay style and position.
+
+Handy's recording visualization receives `mic-level` events, smooths frequency buckets, and renders reactive bars in [RecordingOverlay.tsx](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src/overlay/RecordingOverlay.tsx#L137-L148). Its [spinner CSS](https://github.com/cjpais/Handy/blob/7bfb2e2c934b798bcf6e3627653aed2439996f89/src/overlay/RecordingOverlay.css#L385-L399) rotates every 0.7 seconds. Nemo uses a time history of audio amplitude and an elapsed-time native arc instead; it adds no webview, FFT, VAD model, or copied assets. These mechanisms were inspected at the pinned commit; Handy itself was not run as part of this comparison.
 
 The controller is MIT licensed. The model uses OpenMDW-1.1; the native runtime uses Apache-2.0 and includes its third-party notices. Bundled runtime notices are under `Nemo.app/Contents/Resources/licenses`.
 
@@ -210,6 +214,6 @@ cargo test --locked audio::tests::real_microphone_opens_by_id_and_missing_select
 ```
 
 This opens the current system-default input both automatically and by its saved
-ID, checks that samples arrive, and verifies a missing device requires fallback
+ID, checks that captured samples reach the display meter, and verifies a missing device requires fallback
 confirmation before opening a stream. It does not replace the UI, physical
 unplug/reconnect, or installed-app transcription/paste checks.
