@@ -233,11 +233,7 @@ impl Indicator {
         panel.setIgnoresMouseEvents(false);
         panel.setBecomesKeyOnlyIfNeeded(true);
         panel.setLevel(NSStatusWindowLevel);
-        panel.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::Stationary,
-        );
+        panel.setCollectionBehavior(fullscreen_collection_behavior());
         let view = IndicatorView::alloc(mtm).set_ivars(RefCell::new(Frame::new(Phase::Hidden)));
         let view: Retained<IndicatorView> =
             unsafe { msg_send![super(view), initWithFrame: bounds] };
@@ -391,6 +387,12 @@ impl Indicator {
         std::fs::write(path, png.to_vec())?;
         Ok(())
     }
+}
+
+fn fullscreen_collection_behavior() -> NSWindowCollectionBehavior {
+    NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::CanJoinAllApplications
+        | NSWindowCollectionBehavior::FullScreenAuxiliary
 }
 
 fn contains(frame: NSRect, point: NSPoint) -> bool {
@@ -594,6 +596,15 @@ mod tests {
         assert_eq!(frame.rotation, 90.0);
         frame.advance(0.0, Duration::from_millis(1000));
         assert_eq!(frame.rotation, 90.0);
+    }
+
+    #[test]
+    fn overlay_joins_other_applications_full_screen_spaces() {
+        let behavior = fullscreen_collection_behavior();
+        assert!(behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces));
+        assert!(behavior.contains(NSWindowCollectionBehavior::CanJoinAllApplications));
+        assert!(behavior.contains(NSWindowCollectionBehavior::FullScreenAuxiliary));
+        assert!(!behavior.contains(NSWindowCollectionBehavior::Stationary));
     }
 
     #[test]
