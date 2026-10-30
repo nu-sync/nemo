@@ -1,14 +1,18 @@
 use anyhow::{Context, Result, ensure};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
+use objc2::{
+    DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained, sel,
+};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBezierPath, NSBitmapImageFileType, NSColor, NSEvent, NSFont,
-    NSFontWeightMedium, NSPanel, NSScreen, NSStatusWindowLevel, NSTextField, NSView,
-    NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+    NSAccessibility, NSBackingStoreType, NSBezierPath, NSBitmapImageFileType, NSButton,
+    NSButtonType, NSCellImagePosition, NSColor, NSEvent, NSFont, NSFontWeightMedium, NSPanel,
+    NSScreen, NSStatusWindowLevel, NSTextField, NSView, NSWindowCollectionBehavior,
+    NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSDictionary, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use std::{
     cell::RefCell,
     path::Path,
+    rc::Rc,
     time::{Duration, Instant},
 };
 use tao::{
@@ -20,7 +24,7 @@ use tao::{
     },
 };
 
-const SIZE: NSSize = NSSize::new(168.0, 44.0);
+const SIZE: NSSize = NSSize::new(240.0, 44.0);
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const WAVE_BARS: usize = 32;
 
@@ -59,6 +63,81 @@ pub enum Phase {
     Hidden,
     Recording,
     Transcribing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Stop,
+    Cancel,
+}
+
+impl Action {
+    pub fn command(self, phase: Phase) -> Option<&'static str> {
+        match (self, phase) {
+            (Self::Stop, Phase::Recording) => Some("stop"),
+            (Self::Cancel, Phase::Recording | Phase::Transcribing) => Some("cancel"),
+            _ => None,
+        }
+    }
+}
+
+struct ButtonAction {
+    action: Action,
+    on_action: Rc<dyn Fn(Action)>,
+}
+
+define_class!(
+    #[unsafe(super(NSButton))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ButtonAction]
+    struct IndicatorButton;
+
+    unsafe impl NSObjectProtocol for IndicatorButton {}
+
+    impl IndicatorButton {
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool { true }
+
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool { false }
+
+        #[unsafe(method(activate:))]
+        fn activate(&self, _sender: &NSButton) {
+            self.setEnabled(false);
+            (self.ivars().on_action)(self.ivars().action);
+        }
+    }
+);
+
+impl IndicatorButton {
+    fn new(
+        action: Action,
+        on_action: Rc<dyn Fn(Action)>,
+        x: f64,
+        mtm: MainThreadMarker,
+    ) -> Retained<Self> {
+        let button = Self::alloc(mtm).set_ivars(ButtonAction { action, on_action });
+        let button: Retained<Self> = unsafe {
+            msg_send![super(button), initWithFrame: NSRect::new(NSPoint::new(x, 6.0), NSSize::new(32.0, 32.0))]
+        };
+        let (glyph, label) = match action {
+            Action::Stop => ("■", "Stop and transcribe"),
+            Action::Cancel => ("×", "Cancel"),
+        };
+        button.setButtonType(NSButtonType::MomentaryPushIn);
+        button.setImagePosition(NSCellImagePosition::NoImage);
+        button.setTitle(&NSString::from_str(glyph));
+        button.setFont(Some(&NSFont::systemFontOfSize(18.0)));
+        button.setBordered(false);
+        button.setContentTintColor(Some(&NSColor::whiteColor()));
+        button.setAccessibilityLabel(Some(&NSString::from_str(label)));
+        button.setToolTip(Some(&NSString::from_str(label)));
+        unsafe {
+            button.setTarget(Some(&button));
+            button.setAction(Some(sel!(activate:)));
+        }
+        button
+    }
 }
 
 define_class!(
@@ -129,13 +208,15 @@ pub struct Indicator {
     panel: Retained<IndicatorPanel>,
     view: Retained<IndicatorView>,
     label: Retained<NSTextField>,
+    stop: Retained<IndicatorButton>,
+    cancel: Retained<IndicatorButton>,
     phase: Phase,
     started: Instant,
     next_frame: Instant,
 }
 
 impl Indicator {
-    pub fn new() -> Self {
+    pub fn new(on_action: impl Fn(Action) + 'static) -> Self {
         let mtm = MainThreadMarker::new().expect("Indicator is created on the main thread");
         let bounds = NSRect::new(NSPoint::new(0.0, 0.0), SIZE);
         let panel = IndicatorPanel::alloc(mtm).set_ivars(());
@@ -149,7 +230,8 @@ impl Indicator {
         panel.setHasShadow(true);
         panel.setFloatingPanel(true);
         panel.setHidesOnDeactivate(false);
-        panel.setIgnoresMouseEvents(true);
+        panel.setIgnoresMouseEvents(false);
+        panel.setBecomesKeyOnlyIfNeeded(true);
         panel.setLevel(NSStatusWindowLevel);
         panel.setCollectionBehavior(
             NSWindowCollectionBehavior::CanJoinAllSpaces
@@ -168,12 +250,21 @@ impl Indicator {
             NSFontWeightMedium
         })));
         label.setTextColor(Some(&NSColor::whiteColor()));
+        let on_action: Rc<dyn Fn(Action)> = Rc::new(on_action);
+        let stop = IndicatorButton::new(Action::Stop, on_action.clone(), 160.0, mtm);
+        let cancel = IndicatorButton::new(Action::Cancel, on_action, 196.0, mtm);
+        stop.setHidden(true);
+        cancel.setHidden(true);
         view.addSubview(&label);
+        view.addSubview(&stop);
+        view.addSubview(&cancel);
         panel.setContentView(Some(&view));
         Self {
             panel,
             view,
             label,
+            stop,
+            cancel,
             phase: Phase::Hidden,
             started: Instant::now(),
             next_frame: Instant::now(),
@@ -188,6 +279,10 @@ impl Indicator {
         self.next_frame = self.started;
         *self.view.ivars().borrow_mut() = Frame::new(phase);
         self.label.setHidden(phase != Phase::Transcribing);
+        self.stop.setHidden(phase != Phase::Recording);
+        self.stop.setEnabled(phase == Phase::Recording);
+        self.cancel.setHidden(phase == Phase::Hidden);
+        self.cancel.setEnabled(phase != Phase::Hidden);
         if phase == Phase::Hidden {
             self.panel.orderOut(None);
         } else {
@@ -244,8 +339,24 @@ impl Indicator {
             "Indicator can take keyboard focus"
         );
         ensure!(
-            self.panel.ignoresMouseEvents(),
-            "Indicator intercepts clicks"
+            !self.panel.ignoresMouseEvents(),
+            "Indicator ignores its controls"
+        );
+        ensure!(
+            self.stop.isHidden() == (phase != Phase::Recording),
+            "Stop visibility disagrees with phase"
+        );
+        ensure!(
+            self.cancel.isHidden() == (phase == Phase::Hidden),
+            "Cancel visibility disagrees with phase"
+        );
+        ensure!(
+            !self.stop.acceptsFirstResponder() && !self.cancel.acceptsFirstResponder(),
+            "Indicator controls accept keyboard focus"
+        );
+        ensure!(
+            self.stop.acceptsFirstMouse(None) && self.cancel.acceptsFirstMouse(None),
+            "Indicator controls require activation before clicking"
         );
         match phase {
             Phase::Recording => ensure!(
@@ -309,7 +420,9 @@ pub fn preview(output: Option<&Path>) -> Result<()> {
     let mut event_loop = EventLoopBuilder::<()>::new().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     event_loop.set_activate_ignoring_other_apps(false);
-    let mut indicator = Indicator::new();
+    let actions = Rc::new(RefCell::new(Vec::new()));
+    let observed = actions.clone();
+    let mut indicator = Indicator::new(move |action| observed.borrow_mut().push(action));
     indicator.verify(Phase::Hidden)?;
     let mut next = Instant::now();
     let mut frame_step = 0;
@@ -375,6 +488,37 @@ pub fn preview(output: Option<&Path>) -> Result<()> {
             indicator.set_phase(phase);
             indicator.set_phase(phase);
             indicator.verify(phase)?;
+            actions.borrow_mut().clear();
+            if phase == Phase::Recording {
+                unsafe { indicator.stop.performClick(None) };
+                unsafe { indicator.stop.performClick(None) };
+                unsafe { indicator.cancel.performClick(None) };
+                ensure!(
+                    *actions.borrow() == [Action::Stop, Action::Cancel],
+                    "Recording buttons dispatched incorrect actions"
+                );
+                indicator.stop.setEnabled(true);
+                indicator.cancel.setEnabled(true);
+            } else if phase == Phase::Transcribing {
+                unsafe { indicator.stop.performClick(None) };
+                unsafe { indicator.cancel.performClick(None) };
+                ensure!(
+                    *actions.borrow() == [Action::Cancel],
+                    "Transcribing controls dispatched incorrect actions"
+                );
+                indicator.cancel.setEnabled(true);
+            } else {
+                unsafe { indicator.stop.performClick(None) };
+                unsafe { indicator.cancel.performClick(None) };
+                ensure!(
+                    actions.borrow().is_empty(),
+                    "Hidden controls dispatched an action"
+                );
+            }
+            ensure!(
+                frontmost() == Some(original_app),
+                "Indicator control changed the foreground app"
+            );
             if let Some(output) = output {
                 match phase {
                     Phase::Recording => indicator.snapshot(&output.join("recording.png"))?,
@@ -416,6 +560,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overlay_stop_cannot_start_a_recording_and_cancel_only_applies_to_visible_work() {
+        assert_eq!(Action::Stop.command(Phase::Recording), Some("stop"));
+        for phase in [Phase::Hidden, Phase::Transcribing] {
+            assert_eq!(Action::Stop.command(phase), None);
+        }
+        assert_eq!(Action::Cancel.command(Phase::Hidden), None);
+        for phase in [Phase::Recording, Phase::Transcribing] {
+            assert_eq!(Action::Cancel.command(phase), Some("cancel"));
+        }
+    }
+
+    #[test]
     fn waveform_shows_audio_history_then_settles_to_silence() {
         let mut frame = Frame::new(Phase::Recording);
         frame.advance(0.04, Duration::ZERO);
@@ -447,7 +603,7 @@ mod tests {
                 NSPoint::new(0.0, 80.0),
                 NSSize::new(1440.0, 798.0)
             )),
-            NSPoint::new(636.0, 96.0)
+            NSPoint::new(600.0, 96.0)
         );
     }
 
@@ -458,7 +614,7 @@ mod tests {
                 NSPoint::new(-1920.0, -1080.0),
                 NSSize::new(1920.0, 1056.0)
             )),
-            NSPoint::new(-1044.0, -1064.0)
+            NSPoint::new(-1080.0, -1064.0)
         );
     }
 
