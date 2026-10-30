@@ -84,8 +84,6 @@ pub fn build(options: &Options) -> Result<PathBuf> {
     let contents = app.join("Contents");
     let runtime = contents.join("Resources/runtime");
     fs::create_dir_all(&runtime)?;
-    let licenses = contents.join("Resources/licenses");
-    fs::create_dir_all(&licenses)?;
     fs::create_dir_all(contents.join("MacOS"))?;
     let binary = contents.join("MacOS/nemo");
     fs::copy(&options.binary, &binary)?;
@@ -105,41 +103,6 @@ pub fn build(options: &Options) -> Result<PathBuf> {
             .to_owned();
         if !copied.insert(name.clone()) {
             continue;
-        }
-        let canonical = source.canonicalize()?;
-        if let Some(formula) = canonical
-            .ancestors()
-            .find(|path| path.join("INSTALL_RECEIPT.json").is_file())
-        {
-            let formula_name = formula
-                .parent()
-                .and_then(Path::file_name)
-                .context("Homebrew formula has no name")?
-                .to_string_lossy();
-            let notices: Vec<_> = fs::read_dir(formula)?
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    let name = entry.file_name().to_string_lossy().to_uppercase();
-                    entry.path().is_file()
-                        && ["LICENSE", "COPYING", "NOTICE"]
-                            .iter()
-                            .any(|prefix| name.starts_with(prefix))
-                })
-                .collect();
-            ensure!(
-                !notices.is_empty(),
-                "Missing notices for bundled library {}",
-                source.display()
-            );
-            for notice in notices {
-                fs::copy(
-                    notice.path(),
-                    licenses.join(format!(
-                        "Homebrew-{formula_name}-{}",
-                        notice.file_name().to_string_lossy()
-                    )),
-                )?;
-            }
         }
         let destination = runtime.join(&name);
         fs::copy(&source, &destination)
@@ -222,29 +185,18 @@ pub fn build(options: &Options) -> Result<PathBuf> {
     info.insert("LSUIElement".into(), Value::Boolean(true));
     info.insert("NSHighResolutionCapable".into(), Value::Boolean(true));
     Value::Dictionary(info).to_file_xml(contents.join("Info.plist"))?;
+    let licenses = contents.join("Resources/licenses");
+    fs::create_dir_all(&licenses)?;
     for (source, destination) in [
         ("LICENSE", "Nemo-MIT.txt"),
         ("assets/sounds/Handy-MIT.txt", "Handy-MIT.txt"),
-        (
-            "assets/licenses/Rust-dependencies.txt",
-            "Rust-dependencies.txt",
-        ),
-        (
-            "assets/licenses/Rust-standard-library.txt",
-            "Rust-standard-library.txt",
-        ),
-        ("models/LICENSE", "Model-OpenMDW-1.1.txt"),
     ] {
         fs::copy(options.root.join(source), licenses.join(destination))?;
     }
-    for (source, destination) in [
-        ("llama.cpp/LICENSE", "llama-MIT.txt"),
-        ("third_party/cpp-httplib/LICENSE", "cpp-httplib-MIT.txt"),
-        ("third_party/miniaudio/LICENSE", "miniaudio.txt"),
-    ] {
+    if options.root.join("models/LICENSE").is_file() {
         fs::copy(
-            options.root.join("vendor/NeMo-Speech.cpp").join(source),
-            licenses.join(destination),
+            options.root.join("models/LICENSE"),
+            licenses.join("Model-OpenMDW-1.1.txt"),
         )?;
     }
     for name in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"] {
@@ -305,9 +257,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         for (path, bytes) in [
             ("LICENSE", &b"MIT"[..]), ("assets/sounds/Handy-MIT.txt", b"Handy MIT"),
-            ("assets/licenses/Rust-dependencies.txt", b"Rust MIT"), ("models/LICENSE", b"OpenMDW"),
-            ("assets/licenses/Rust-standard-library.txt", b"Rust standard MIT"),
-            ("vendor/NeMo-Speech.cpp/llama.cpp/LICENSE", b"llama MIT"), ("vendor/NeMo-Speech.cpp/third_party/cpp-httplib/LICENSE", b"httplib MIT"), ("vendor/NeMo-Speech.cpp/third_party/miniaudio/LICENSE", b"miniaudio"),
             ("models/manifest.json", b"{}"), ("vendor/NeMo-Speech.cpp/LICENSE", b"Apache"),
             ("vendor/NeMo-Speech.cpp/NOTICE", b"notice"), ("vendor/NeMo-Speech.cpp/THIRD_PARTY_NOTICES.md", b"third party"),
             ("scripts/entitlements.plist", b"<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict/></plist>"),

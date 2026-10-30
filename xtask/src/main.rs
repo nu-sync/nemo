@@ -211,7 +211,6 @@ fn built_executable(messages: &str) -> Result<PathBuf> {
 }
 
 fn check() -> Result<()> {
-    check_notices(&workspace_root()?)?;
     let temporary = tempfile::tempdir()?;
     run(cargo().args(["fmt", "--all", "--check"]))?;
     run(cargo().args([
@@ -228,16 +227,6 @@ fn check() -> Result<()> {
         .env("NEMO_DATA_DIR", temporary.path().join("data"))
         .env("NEMO_APP_PATH", temporary.path().join("Nemo.app"))
         .env_remove("NEMO_RUNTIME"))
-}
-
-fn check_notices(root: &Path) -> Result<()> {
-    let lock = nemo_build::sha256(&root.join("Cargo.lock"))?;
-    ensure!(
-        fs::read_to_string(root.join("assets/licenses/Rust-dependencies.txt"))?
-            .contains(&format!("Cargo.lock SHA256: {lock}")),
-        "Rust dependency notices are stale; run python3 scripts/dependency-notices.py"
-    );
-    Ok(())
 }
 
 fn destination(requested: Option<PathBuf>) -> Result<PathBuf> {
@@ -492,7 +481,6 @@ fn words(text: &str) -> Vec<String> {
 }
 
 fn release_check(root: &Path) -> Result<()> {
-    check_notices(root)?;
     for required in [
         "LICENSE",
         "README.md",

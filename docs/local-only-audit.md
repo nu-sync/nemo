@@ -65,17 +65,9 @@ the model is OpenMDW-1.1; Handy-derived sounds are MIT. These licenses permit
 free-of-charge use subject to their terms and retained notices. There is no Nemo
 account, subscription or inference API requirement.
 
-The macOS Rust graph is checked against an explicit permissive-license policy and
-approved registry sources using `deny.toml`. Generated notices retain local crate
-license texts and are bound to Cargo.lock. Some objc2-family crates omit license
-files from their crate archives; pinned upstream statements are retained under
-`assets/licenses/upstream/`, including their Apple SDK licensing caveat. Do not
-describe that upstream caveat as resolved legal clearance.
-
-Packaging retains Rust/standard-library notices, actual native submodule licenses,
-and license/notice files from every bundled Homebrew formula. The inspected bundle
-included Abseil, Protobuf and SentencePiece notices. macOS system frameworks are
-linked from the operating system rather than redistributed as open-source code.
+The macOS Rust graph is checked against a permissive-license policy and approved
+registry sources using `deny.toml`. This check does not generate or collect license
+texts. Distribution notice completeness is outside this lifecycle experiment.
 
 ## Verification and limits
 
@@ -89,7 +81,7 @@ not repeated; transfer/resume/integrity regressions use a loopback fixture.
 The source audit reviewed the tracked textual repository and traced the native
 local-model serving, authentication, input decoding, network and logging paths.
 No substantiated attacker-to-impact vulnerability was established. Runtime network
-authority and notice completeness were hardening gaps addressed by this change.
+authority was a hardening gap addressed by this change.
 This is not an exhaustive audit of llama.cpp, ggml, audio parsers, macOS/GPU drivers,
 or every dependency's implementation. Authentication-key confidentiality across
 different local accounts remains untested; the current native CLI receives it in
@@ -102,5 +94,5 @@ helper. The final report must distinguish subsequent passing runs from that fail
 
 Boundary Discipline drove the separation of download authority from audio handling.
 Foundational Thinking drove the fixed pipe protocol and process ownership.
-Build the Lever drove the repeatable verifier and notice generator. Prove It Works
+Build the Lever drove the repeatable verifier. Prove It Works
 requires real model output and actual denied connections before claiming success.

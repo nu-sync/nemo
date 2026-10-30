@@ -24,14 +24,6 @@ const PAYLOAD: &[(&str, &[u8])] = &[
         include_bytes!("../scripts/entitlements.plist"),
     ),
     ("LICENSE", include_bytes!("../LICENSE")),
-    (
-        "assets/licenses/Rust-standard-library.txt",
-        include_bytes!("../assets/licenses/Rust-standard-library.txt"),
-    ),
-    (
-        "assets/licenses/Rust-dependencies.txt",
-        include_bytes!("../assets/licenses/Rust-dependencies.txt"),
-    ),
     ("models/LICENSE", include_bytes!("../models/LICENSE")),
     (
         "models/manifest.json",
