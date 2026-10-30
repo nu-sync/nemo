@@ -100,6 +100,7 @@ impl Backend {
             key,
             client: Client::builder()
                 .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(300))
                 .build()?,
         })
@@ -140,7 +141,9 @@ impl Backend {
         drop(listener);
         fs::create_dir_all(config::data_dir())?;
         let log = File::create(config::data_dir().join("inference.log"))?;
-        let mut command = Command::new(&self.config.runtime);
+        use std::os::unix::fs::PermissionsExt;
+        log.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let mut command = crate::network::inference_command(&self.config.runtime);
         command
             .args(["serve", "--asr-model"])
             .arg(&self.config.model)
@@ -272,11 +275,7 @@ impl Backend {
                 .context("Transcription request failed")?;
             let status = response.status();
             let body = response.text()?;
-            ensure!(
-                status.is_success(),
-                "Transcription failed ({status}): {}",
-                body.chars().take(1000).collect::<String>()
-            );
+            ensure!(status.is_success(), "Transcription failed ({status})");
             ensure!(!canceled.load(Ordering::Acquire), "Canceled");
             #[derive(Deserialize)]
             struct Transcript {

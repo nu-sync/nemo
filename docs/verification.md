@@ -40,6 +40,13 @@ During the daemon lifecycle check, the loaded native process had **19,353,136 Ki
 
 Raw evidence is retained locally in ignored `artifacts/`: `model-verification.txt`, `verification-run.txt`, `lifecycle-verification.json`, transcript files, timing files, and bundled-library diagnostics. Rerun `scripts/verify.sh` and, with Nemo stopped, `python3 scripts/verify-lifecycle.py`.
 
+## Local-only audit
+
+Use the [offline verification skill](../.agents/skills/verify-offline/SKILL.md) for
+external-network denial, real local inference, constrained model acquisition, and
+dependency/license checks. See [local-only operation and audit](local-only-audit.md)
+for the enforced boundaries and audit limits.
+
 ## Decisions shaped by principles
 
 - **Foundational Thinking / Model the Domain:** one UI owner and explicit idle, starting, recording, and working states; canceled results cannot paste and pending microphone requests cannot overlap.

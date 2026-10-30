@@ -5,8 +5,10 @@ mod bootstrap;
 mod config;
 mod control;
 mod doctor;
+mod download;
 mod indicator;
 mod model;
+mod network;
 mod output;
 mod permissions;
 mod readiness;
@@ -50,6 +52,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    DownloadWorker {
+        #[arg(long)]
+        parent_pid: u32,
+    },
     /// Prepare Nemo.app from this Cargo-installed executable.
     Install {
         /// Allow an update that may require granting macOS permissions again.
@@ -233,6 +240,7 @@ fn main() {
 fn execute() -> Result<()> {
     let cli = Cli::parse();
     let command = match cli.command {
+        Some(Command::DownloadWorker { parent_pid }) => return download::worker(parent_pid),
         None if !bootstrap::bundled() => return bootstrap::launch(),
         Some(Command::Install {
             allow_permission_reset,
@@ -241,8 +249,14 @@ fn execute() -> Result<()> {
             println!("Installed {}. Run `nemo` to open it.", app.display());
             return Ok(());
         }
-        Some(Command::Assist { silent, dry_run }) => return assist::run(silent, dry_run),
-        Some(Command::PreviewIndicator { output }) => return indicator::preview(output.as_deref()),
+        Some(Command::Assist { silent, dry_run }) => {
+            network::local_only()?;
+            return assist::run(silent, dry_run);
+        }
+        Some(Command::PreviewIndicator { output }) => {
+            network::local_only()?;
+            return indicator::preview(output.as_deref());
+        }
         Some(Command::PrepareApp {
             root,
             binary,
@@ -252,9 +266,23 @@ fn execute() -> Result<()> {
         None => Command::Run,
         Some(command) => command,
     };
+    let mut downloader = if matches!(
+        command,
+        Command::Model {
+            command: ModelCommand::Download
+        }
+    ) {
+        Some(download::Downloader::spawn()?)
+    } else {
+        None
+    };
+    if !matches!(command, Command::Run) {
+        network::local_only()?;
+    }
     let mut config = Config::load()?;
     match command {
-        Command::Install { .. }
+        Command::DownloadWorker { .. }
+        | Command::Install { .. }
         | Command::Assist { .. }
         | Command::PreviewIndicator { .. }
         | Command::PrepareApp { .. } => {
@@ -309,7 +337,7 @@ fn execute() -> Result<()> {
                 child.shutdown();
             })?;
             match command {
-                ModelCommand::Download => store.download(&process, &canceled)?,
+                ModelCommand::Download => downloader.as_mut().unwrap().download(&canceled)?,
                 ModelCommand::Verify => store.verify(&canceled)?,
                 ModelCommand::Migrate { from } => {
                     store.migrate(&from, &canceled)?;
@@ -406,11 +434,20 @@ fn start_recording(
 
 fn run(mut config: Config) -> Result<()> {
     let server = control::Server::bind()?;
+    let store = model::Store::managed();
+    let mut downloader = if config.model != store.decoder() || store.ready() {
+        None
+    } else {
+        Some(download::Downloader::spawn()?)
+    };
+    network::local_only()?;
     fs::create_dir_all(config::data_dir())?;
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(config::data_dir().join("daemon.log"))?;
+    use std::os::unix::fs::PermissionsExt;
+    log.set_permissions(fs::Permissions::from_mode(0o600))?;
     use std::os::fd::AsRawFd;
     unsafe {
         libc::dup2(log.as_raw_fd(), libc::STDERR_FILENO);
@@ -588,12 +625,14 @@ fn run(mut config: Config) -> Result<()> {
                         }
                         Job::Download(id, canceled) => {
                             backend.unload();
-                            (
-                                id,
-                                model::Store::managed()
-                                    .download(&backend.process, &canceled)
-                                    .map(|_| Outcome::ModelDownloaded),
-                            )
+                            let result = match &mut downloader {
+                                Some(downloader) => downloader.download(&canceled),
+                                None => model::Store::managed().verify(&canceled).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
+                            };
+                            if result.is_ok() {
+                                downloader.take();
+                            }
+                            (id, result.map(|_| Outcome::ModelDownloaded))
                         }
                         Job::Transcribe(id, wav, canceled, stopped) => {
                             eprintln!(

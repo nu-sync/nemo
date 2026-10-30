@@ -4,6 +4,11 @@ Local voice dictation for Apple Silicon Macs. Tap **right Option** to record, th
 
 Audio is processed on your Mac. No account or API key is required.
 
+After installation and model download, dictation works offline. The controller and
+inference runtime deny external networking; a constrained helper fetches only the
+pinned model. See the [local-only audit](docs/local-only-audit.md) for controls,
+license checks, verification, and the separate network requirements of source installation.
+
 ## Install
 
 You need **macOS 26 or newer**, an Apple Silicon Mac, [Rust](https://rustup.rs), and [Homebrew](https://brew.sh). Allow **21.35 GB** for the model download, plus space for build files. The loaded model used about **20 GB of memory** in our [M5 Max tests](docs/performance.md).

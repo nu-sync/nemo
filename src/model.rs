@@ -191,11 +191,11 @@ fn download_asset(
         fs::remove_file(&partial)?;
     }
     ensure!(!canceled.load(Ordering::Acquire), "Canceled");
-    let mut command = Command::new("/usr/bin/curl");
+    let url = resolve_download_url(directory, url, process, canceled)?;
+    let mut command = download_command();
     command
         .args([
             "--fail",
-            "--location",
             "--retry",
             &retries.to_string(),
             "--retry-delay",
@@ -211,12 +211,96 @@ fn download_asset(
             "--output",
         ])
         .arg(&partial)
-        .args(["--url", url])
+        .args(["--url", &url])
         .stdin(Stdio::null());
     process.run(&mut command, canceled)?;
     publish(&partial, &target, asset, canceled)?;
     eprintln!("Verified {}", asset.name);
     Ok(())
+}
+
+fn download_command() -> Command {
+    let mut command = Command::new("/usr/bin/curl");
+    command
+        .env_clear()
+        .args(["--disable", "--noproxy", "*", "--proto", "=https"]);
+    #[cfg(test)]
+    command.args(["--proto", "=http,https"]);
+    command
+}
+
+fn allowed_download_url(url: &str) -> Result<()> {
+    let url = reqwest::Url::parse(url)?;
+    ensure!(
+        url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port_or_known_default() == Some(443)
+            && matches!(
+                url.host_str(),
+                Some(
+                    "huggingface.co"
+                        | "us.aws.cdn.hf.co"
+                        | "cas-bridge.xethub.hf.co"
+                        | "cdn-lfs.huggingface.co"
+                        | "cdn-lfs-us-1.hf.co"
+                )
+            ),
+        "Model download destination is not approved"
+    );
+    Ok(())
+}
+
+fn resolve_download_url(
+    directory: &Path,
+    initial: &str,
+    process: &Process,
+    canceled: &AtomicBool,
+) -> Result<String> {
+    #[cfg(test)]
+    if initial.starts_with("http://127.0.0.1:") {
+        return Ok(initial.to_owned());
+    }
+    let metadata = storage::temporary(&directory.join("redirect"));
+    let result = (|| {
+        let mut url = initial.to_owned();
+        for _ in 0..8 {
+            allowed_download_url(&url)?;
+            let mut command = download_command();
+            command
+                .args([
+                    "--head",
+                    "--silent",
+                    "--show-error",
+                    "--fail",
+                    "--max-time",
+                    "30",
+                    "--output",
+                    "/dev/null",
+                    "--write-out",
+                    "%{http_code}\n%{redirect_url}",
+                    "--url",
+                    &url,
+                ])
+                .stdout(Stdio::from(File::create(&metadata)?));
+            process.run(&mut command, canceled)?;
+            let response = fs::read_to_string(&metadata)?;
+            let (status, redirect) = response
+                .split_once('\n')
+                .context("Invalid download response")?;
+            if status.starts_with('2') {
+                return Ok(url);
+            }
+            ensure!(
+                status.starts_with('3') && !redirect.is_empty(),
+                "Unexpected model download response"
+            );
+            url = redirect.to_owned();
+        }
+        anyhow::bail!("Too many model download redirects")
+    })();
+    let _ = fs::remove_file(metadata);
+    result
 }
 
 fn verify_file(path: &Path, asset: &Asset, canceled: &AtomicBool) -> Result<()> {
@@ -247,6 +331,75 @@ fn verify_file(path: &Path, asset: &Asset, canceled: &AtomicBool) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "contacts pinned Hugging Face model hosts with HEAD only"]
+    fn pinned_model_redirects_work_inside_download_sandbox() {
+        const MARKER: &str = "NEMO_MODEL_HEAD_TEST";
+        if std::env::var_os(MARKER).is_some() {
+            crate::network::download_only().unwrap();
+            let store = Store::managed();
+            fs::create_dir_all(&store.directory).unwrap();
+            for asset in &store.manifest.files {
+                let url = format!(
+                    "https://huggingface.co/{}/resolve/{}/{}",
+                    store.manifest.repository, store.manifest.revision, asset.name
+                );
+                let resolved = resolve_download_url(
+                    &store.directory,
+                    &url,
+                    &Process::default(),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                allowed_download_url(&resolved).unwrap();
+                println!(
+                    "Approved model download host: {}",
+                    reqwest::Url::parse(&resolved).unwrap().host_str().unwrap()
+                );
+            }
+            return;
+        }
+        let data = tempfile::tempdir().unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "model::tests::pinned_model_redirects_work_inside_download_sandbox",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(MARKER, "1")
+            .env("NEMO_DATA_DIR", data.path())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&result.stdout));
+    }
+
+    #[test]
+    fn model_download_rejects_unapproved_destinations() {
+        for url in [
+            "http://huggingface.co/model",
+            "https://huggingface.co.evil.test/model",
+            "https://example.com/model",
+            "https://user:secret@huggingface.co/model",
+            "https://huggingface.co:8443/model",
+            "file:///tmp/model",
+        ] {
+            assert!(allowed_download_url(url).is_err(), "{url}");
+        }
+        for url in [
+            "https://huggingface.co/model",
+            "https://us.aws.cdn.hf.co/model?signature=fixture",
+        ] {
+            allowed_download_url(url).unwrap();
+        }
+    }
     fn fixture(root: &Path) -> Store {
         let bytes = b"GGUF test weights";
         Store {
