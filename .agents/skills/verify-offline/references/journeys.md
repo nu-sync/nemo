@@ -6,7 +6,7 @@
 | Offline menu daemon | Graphical macOS session; verifier with `--daemon` | Launch isolated daemon with cached model references; identity PID matches, idle has no download helper, warm produces one inference child, quit reaps owned processes. No microphone or clipboard operation. |
 | Constrained model acquisition | Rust tests; optional network access for HEAD check | Run policy, resumable-transfer, and fixed helper protocol tests. Validate actual pinned-host redirects without transferring weights. Explicit cached `nemo model download` verifies existing weights without replacing them. |
 | Dependencies and packaged notices | Cached crate sources, cargo-deny, candidate bundle | Check advisories, licenses and sources, run release checks and relocated bundle verification; inspect the bundle dependencies. |
-| Acoustic recording and paste | Installed candidate with existing macOS grants and a scratch target | Follow verify-nemo for real speakers/microphone, inference and observed paste. The controller's built-in network-deny policy remains active. Keep the scratch app foreground and never submit fixture text. |
+| Acoustic dictation to clipboard | Installed candidate with existing macOS grants; `scripts/verify-clipboard.py` | Follow verify-nemo for real speakers/microphone, inference and expected clipboard text under network denial. No editor or foreground target is required; visible paste is a separate explicit check. |
 
 ## Downloader checks
 

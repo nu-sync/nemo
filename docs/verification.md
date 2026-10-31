@@ -40,6 +40,23 @@ During the daemon lifecycle check, the loaded native process had **19,353,136 Ki
 
 Raw evidence is retained locally in ignored `artifacts/`: `model-verification.txt`, `verification-run.txt`, `lifecycle-verification.json`, transcript files, timing files, and bundled-library diagnostics. Rerun `scripts/verify.sh` and, with Nemo stopped, `python3 scripts/verify-lifecycle.py`.
 
+## Default end-to-end check
+
+Use real speaker playback and microphone capture, local inference, and clipboard
+comparison. No text editor, foreground focus or visible paste is required:
+
+```sh
+uv run --no-project --python 3.13 python scripts/verify-clipboard.py \
+  --output artifacts/performance/installed-clipboard-NEW
+```
+
+This runs the installed executable under external-network denial with an isolated
+`paste=false` configuration, then restores the prior normal app session without
+changing user preferences. Require `summary.json` to pass and
+`roundtrip/results.json` to report `clipboard_matches_reference=true`.
+See [verify-nemo](../.agents/skills/verify-nemo/SKILL.md) for prerequisites. Test
+visible paste, physical shortcuts and full idle expiry separately when requested.
+
 ## Local-only audit
 
 Use the [offline verification skill](../.agents/skills/verify-offline/SKILL.md) for
@@ -48,8 +65,8 @@ dependency/license checks. See [local-only operation and audit](local-only-audit
 for the enforced boundaries and audit limits.
 
 The [offline lifecycle model](../verification/offline/README.md) checks finite
-process-capability interleavings. Its confinement invariants pass; the full command
-retains counterexamples for abrupt helper death and cancellation after publication.
+process-capability interleavings. All nine invariants pass, including the previously failing helper-ownership
+and publication/cancellation retirement diagnostics.
 Use [verify-offline-model](../.agents/skills/verify-offline-model/SKILL.md) when the
 mapped lifecycle or sandbox source changes. This complements runtime verification.
 

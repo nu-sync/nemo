@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the installed Nemo daemon, then observe its full five-minute idle expiry.
 
-Focus a blank scratch document first: the installed app's real paste setting is used.
+Clipboard comparison is the default acceptance check. Use verify-clipboard.py for
+a safe isolated paste=false run. A foreground editor is needed only for --paste-target.
 Requires Python 3.11+. This command speaks a synthetic phrase through the speakers.
 """
 
@@ -194,7 +195,9 @@ def main():
     report = {"status": "running", "app": str(args.app), "expected": args.expected,
               "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "method": "installed daemon; real microphone and speaker playback; full configured idle expiry",
-              "samples": [], "events": [], "ui_document_check": "performed separately by caller"}
+              "samples": [], "events": [],
+              "ui_document_check": ("required separately by caller" if args.paste_target
+                                    else "not requested; clipboard acceptance")}
     report["roundtrip_only"] = args.roundtrip_only
     report["warm_roundtrip"] = args.warm
     report["paste_check_scope"] = ("clipboard and requested target log; visible text requires separate UI observation"

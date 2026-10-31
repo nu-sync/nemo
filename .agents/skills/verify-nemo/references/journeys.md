@@ -6,9 +6,10 @@ lists target overrides. Run one acoustic test at a time.
 
 | Journey | Surface and helper | Required proof |
 | --- | --- | --- |
-| Cold acoustic dictation | Installed app, real speakers/microphone, `verify-installed.py --roundtrip-only` | Model starts and becomes ready while Recording; stop produces expected words and visible paste using the prepared PID. |
+| Cold acoustic dictation | Installed app, real speakers/microphone, `verify-clipboard.py` | Model starts and becomes ready while Recording; stop produces the expected clipboard words using the prepared PID. No editor or focus check. |
 | Warm follow-up dictation | Same installed daemon, `verify-installed.py --roundtrip-only --warm` | Another recording reuses the same runtime; no load event occurs during recording, and transcript telemetry reports zero load time and `reused_model=true`. This resets the idle window. |
 | Full five-minute expiry | Live app with `verify-installed.py --observe-idle`, or the same installed executable in an isolated full-expiry check | Same runtime survives the idle interval, then exits near 300 seconds; daemon stays idle with a model-unloaded outcome. Label which instance was observed. |
+| Optional visible paste | `verify-installed.py --roundtrip-only --paste-target TextEdit` | Only when explicitly requested: verify actual foreground focus and inserted text in a scratch document. |
 | Preparation cancellation | Isolated supplemental `verify-performance.py --recording-only` | Cancel during load reaps it; cancel after readiness retains it; clipboard unchanged. This does not establish the Finder-launched app's permissions. |
 
 ## Installed-app readiness
@@ -24,13 +25,13 @@ Read configuration without changing it:
 "$HOME/Applications/Nemo.app/Contents/MacOS/nemo" status
 "$HOME/Applications/Nemo.app/Contents/MacOS/nemo" config
 system_profiler SPAudioDataType
-python3 --version
+uv run --no-project --python 3.13 python --version
 ```
 
 Query the daemon's permission snapshot through its existing control socket:
 
 ```sh
-python3 - <<'PY'
+uv run --no-project --python 3.13 python - <<'PY'
 from pathlib import Path
 import socket
 path = Path.home() / 'Library/Application Support/Nemo/run/control.sock'
@@ -51,32 +52,47 @@ Nemo is a menu-bar app: a native UI tool can time out looking for a window even
 when launch succeeded. Check the actual daemon status/socket before retrying a
 launch; a missing standard window is not an instance-health failure.
 
-For a cold start, wait for normal idle unloading or quit with `quit --if-idle` and
+The default clipboard helper owns cold startup. For other manual cold checks,
+wait for normal idle unloading or quit with `quit --if-idle` and
 reopen the **same installed app** through the native app tool. Confirm no owned
 runtime remains. Do not quit an active recording or bypass a refused idle quit.
 Rebuilding/reinstalling can change the ad hoc identity and invalidate grants.
 
 ## Acoustic round trip and warm reuse
 
-Create an empty scratch document through the native UI tool. Keep it focused while
-the fixture is spoken and until paste completes. Coordinate this brief focus
-requirement with the user; changing foreground apps changes Nemo's paste target.
-Background AX clicks or window Raise actions did not reliably activate TextEdit
-on this Mac. Confirm the installed app's `doctor` output says `Foreground app:
-TextEdit`; if it does not, have the user click inside the scratch document. The
-target guard below checks that diagnostic before recording and again before stop,
-so a background editor cannot silently pass as the intended paste destination.
+Use the clipboard as the default completion check. Do not open a text editor,
+require a foreground target, or ask the user to click a window for routine tests.
+
+```sh
+uv run --no-project --python 3.13 python scripts/verify-clipboard.py \
+  --output artifacts/performance/installed-clipboard-NEW
+```
+
+The helper uses the installed executable and its actual Microphone/Accessibility
+grants, an isolated copy of the configuration with `paste=false`, and an explicit
+external-network-deny wrapper. It safely quits only an idle normal app, stops its
+owned test daemon afterward, and reopens the normal app if it was running. The
+user's configuration is unchanged. Do not sandbox the verification driver itself:
+its `/bin/ps` observations require normal process-inspection access. The Nemo
+process and its inference descendants remain network denied.
+
+Require `summary.json` to have `passed=true`, the expected daemon identity,
+`test_daemon_stopped=true`, unchanged normal configuration, and restoration when
+the normal app was previously running. In `roundtrip/results.json`, require the
+physical capture/model-preparation checks and `clipboard_matches_reference=true`.
+`paste_verified=false` is expected. No microphone audio is saved. Preserve failed
+or inconclusive attempts; user shortcut activity must not be canceled by cleanup.
 
 The helper's spoken reference is:
 
 > The quick brown fox jumps over the lazy dog. This is a local speech recognition test on my laptop.
 
-```sh
-python3 scripts/verify-installed.py \
-  --roundtrip-only --paste-target TextEdit \
-  --output artifacts/performance/installed-cold-roundtrip-NEW
+The lower-level driver remains available for advanced journeys on an already
+controlled daemon, such as a warm follow-up with `paste=false`:
 
-python3 scripts/verify-installed.py --roundtrip-only --warm --paste-target TextEdit \
+```sh
+uv run --no-project --python 3.13 python scripts/verify-installed.py \
+  --roundtrip-only --warm --data-dir /absolute/controlled-data \
   --output artifacts/performance/installed-warm-roundtrip-NEW
 ```
 
@@ -95,18 +111,25 @@ different target is inconclusive, even if recognition and clipboard checks pass.
 Without this option, the helper's default result remains an acoustic/transcription
 and clipboard result without a paste-target assertion.
 
-Read the scratch document with the native UI tool after the helper reaches
-transcription completion. Match its words against the reference and retain this
-observation alongside `results.json`. Check `paste_destination_log`; a successful
-clipboard assertion or a `Pasting into ...` log does not replace a visible text
-check. If focus changed, report the actual destination and the coverage gap; never
-claim TextEdit paste when the text went elsewhere. The helper does not press Send.
-Even `paste_target_log_matches=true` does not establish visible insertion: Nemo
-logs the destination before emitting paste keys, without a fixed delay. Keep TextEdit
-foreground through completion and retain the actual native UI text observation.
+### Optional visible paste
 
-For a warm follow-up, run the second command in the existing session before its
-timeout. Do not run a file-transcription command: that starts a
+Only when the user explicitly asks to test insertion, prepare a scratch document
+and use the existing normal daemon with its `paste=true` preference:
+
+```sh
+uv run --no-project --python 3.13 python scripts/verify-installed.py \
+  --roundtrip-only --paste-target TextEdit \
+  --output artifacts/performance/installed-paste-NEW
+```
+
+Confirm `doctor` reports TextEdit foreground before recording and before stop.
+Inspect the actual inserted text through the native UI tool after transcription;
+a clipboard match or paste log alone does not prove insertion. Never submit the
+fixture to a chat, email or form. Focus failures make this optional paste check
+inconclusive; they do not block the default clipboard journey.
+
+For a warm follow-up, run the lower-level command in the controlled session
+before its timeout. Do not run a file-transcription command: that starts a
 separate model process. Use installed-daemon telemetry and its exact child PID to
 verify reuse. Do warm follow-ups before the final idle observation, since each job
 restarts the clock. Physical shortcut behavior requires a separate shortcut-driven
@@ -115,13 +138,14 @@ run when specifically requested; CLI toggle is not proof of the physical key.
 ## Full idle expiry
 
 After the cold and warm round trips, observe expiry independently with the command
-below. This avoids making successful round-trip checks inconclusive merely because
-a follow-up recording resets the timer. The default full round-trip helper still
+below on a normal daemon with a loaded model. The default clipboard helper stops
+its test model at teardown and does not check idle expiry. This avoids making
+successful round-trip checks inconclusive merely because a follow-up recording resets the timer. The default full round-trip helper still
 observes the idle window automatically; if user activity interrupts it, retain that
 inconclusive report and use the same read-only observer:
 
 ```sh
-python3 scripts/verify-installed.py --observe-idle \
+uv run --no-project --python 3.13 python scripts/verify-installed.py --observe-idle \
   --output artifacts/performance/installed-idle-NEW
 ```
 
@@ -151,7 +175,7 @@ executable**, without capturing microphone audio, playing speech, or touching th
 clipboard:
 
 ```sh
-python3 scripts/verify-performance.py --full-idle-expiry-only \
+uv run --no-project --python 3.13 python scripts/verify-performance.py --full-idle-expiry-only \
   --binary "$HOME/Applications/Nemo.app/Contents/MacOS/nemo" \
   --runtime "$HOME/Applications/Nemo.app/Contents/Resources/runtime/nemo-speech" \
   --model "$("$HOME/Applications/Nemo.app/Contents/MacOS/nemo" model path)" \
@@ -175,7 +199,7 @@ find both instances. Status queries to the normal app remain safe.
 ## Supplemental cancellation
 
 ```sh
-python3 scripts/verify-performance.py --recording-only \
+uv run --no-project --python 3.13 python scripts/verify-performance.py --recording-only \
   --binary "$HOME/Applications/Nemo.app/Contents/MacOS/nemo" \
   --runtime "$HOME/Applications/Nemo.app/Contents/Resources/runtime/nemo-speech" \
   --model "$("$HOME/Applications/Nemo.app/Contents/MacOS/nemo" model path)" \
