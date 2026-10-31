@@ -57,10 +57,15 @@ pub enum ProfileState {
     Present,
     /// Every pinned file matched its pinned digest.
     Verified,
+    /// A pinned file hashed differently. Not usable: the only way back is to
+    /// provision again, so a failed check demotes the profile instead of leaving it
+    /// silently running on weights nobody vouched for.
+    Corrupt { mismatched: usize },
 }
 
 impl ProfileState {
-    /// A usable profile has every pinned file present at the pinned length.
+    /// A usable profile has every pinned file present at the pinned length and no
+    /// known mismatch.
     pub fn is_usable(self) -> bool {
         matches!(self, Self::Present | Self::Verified)
     }
@@ -70,6 +75,9 @@ impl ProfileState {
         match self {
             Self::Unprovisioned { missing, total } => Some(format!(
                 "{missing} of {total} pinned weight files are missing or the wrong size"
+            )),
+            Self::Corrupt { mismatched } => Some(format!(
+                "{mismatched} pinned weight files did not match their digest; provision again"
             )),
             Self::Present | Self::Verified => None,
         }
@@ -172,9 +180,20 @@ impl Store {
                 bail!("{}", state.reason().unwrap_or_default())
             }
             ProfileState::Verified => Ok(ProfileState::Verified),
+            // A mismatch is not repaired by asking again; only new bytes are.
+            corrupt @ ProfileState::Corrupt { .. } => Ok(corrupt),
             ProfileState::Present => {
-                self.verify(canceled)?;
-                Ok(ProfileState::Verified)
+                let mut mismatched = 0;
+                for asset in &self.manifest.files {
+                    if verify_file(&self.directory.join(&asset.name), asset, canceled).is_err() {
+                        mismatched += 1;
+                    }
+                }
+                Ok(if mismatched == 0 {
+                    ProfileState::Verified
+                } else {
+                    ProfileState::Corrupt { mismatched }
+                })
             }
         }
     }
@@ -827,5 +846,51 @@ mod tests {
             Err(error) => error,
         };
         assert!(format!("{error:#}").contains("missing"));
+    }
+
+    #[test]
+    fn a_failed_hash_demotes_the_profile_instead_of_leaving_it_usable() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"GGUF";
+        let mut store = store_with_profiles(root.path());
+        store.directory = root.path().join("managed");
+        store.manifest.files = vec![Asset {
+            name: "decoder.gguf".into(),
+            bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(b"something else")),
+        }];
+        std::fs::create_dir_all(&store.directory).unwrap();
+        std::fs::write(store.directory.join("decoder.gguf"), bytes).unwrap();
+        assert_eq!(store.state(), ProfileState::Present);
+
+        let canceled = AtomicBool::new(false);
+        let state = store
+            .verify_state(&canceled)
+            .expect("hash mismatch is a state, not an io error");
+        assert_eq!(state, ProfileState::Corrupt { mismatched: 1 });
+        assert!(!state.is_usable(), "a corrupt profile must not be usable");
+        assert!(state.reason().unwrap_or_default().contains("digest"));
+        // it stays corrupt until the bytes change
+        assert_eq!(store.verify_state(&canceled).unwrap(), state);
+    }
+
+    #[test]
+    fn matching_hashes_reach_verified_and_stay_usable() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"GGUF";
+        let mut store = store_with_profiles(root.path());
+        store.directory = root.path().join("managed");
+        store.manifest.files = vec![Asset {
+            name: "decoder.gguf".into(),
+            bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        }];
+        std::fs::create_dir_all(&store.directory).unwrap();
+        std::fs::write(store.directory.join("decoder.gguf"), bytes).unwrap();
+
+        let canceled = AtomicBool::new(false);
+        let state = store.verify_state(&canceled).unwrap();
+        assert_eq!(state, ProfileState::Verified);
+        assert!(state.is_usable());
     }
 }

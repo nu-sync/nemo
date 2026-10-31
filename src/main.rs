@@ -734,7 +734,13 @@ fn run(mut config: Config) -> Result<()> {
                                 Some(downloader) => downloader.download(&canceled),
                                 None => model::Store::managed()
                         .verify_state(&canceled)
-                        .map(|_| ()).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
+                        .and_then(|state| match state.is_usable() {
+                            true => Ok(()),
+                            false => anyhow::bail!(
+                                "{}",
+                                state.reason().unwrap_or_else(|| "weights unusable".into())
+                            ),
+                        }).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
                             };
                             if downloader
                                 .as_ref()
