@@ -272,3 +272,99 @@ Stated plainly, because the earlier write-up drifted toward "plausible":
   11% and only speculation matters.
 - **`llama-cli` has not been built** from the vendored tree, so "it can drive
   MTP on Metal" is an inference from the public API surface, not a run.
+
+## 10. Multi-device delivery
+
+The constraint that decides the engine choice is not speed, it is provisioning.
+
+Nemo provisions in exactly three places: the model manifest is **embedded at
+compile time** (`include_str!("../models/manifest.json")`, one pinned revision,
+`Store::decoder()` = `files[0]`), `nemo model download` fetches it with per-file
+SHA-256 and resume, and `cargo xtask install` builds, signs, installs and confirms
+the app. One app bundle, one model cache, one installer, verifiable on any machine.
+
+**Anything that adds a second provisioning path breaks that**, and a second laptop
+is where it breaks first:
+
+| | current runtime | MLX sidecar |
+| --- | --- | --- |
+| new download | none | 21.6 GB into a cache the model store does not own |
+| toolchain on the device | none (bundled) | uv + CPython + PyPI resolution |
+| verifiable by `nemo model verify` | yes | no |
+| new license in the tree | no | OpenMDW-1.1 |
+| works on a locked-down work laptop | yes | only if PyPI and git are reachable |
+| cold-load regression | none | 42% of dictations, median +2.16 s |
+
+**Route A adds nothing.** The 1.55x arrives as a new binary inside the existing
+bundle: same GGUF, same manifest, same download, same installer, same cache, no
+config migration. Its setup story on the second laptop is *unchanged*, which is the
+only version of this that stays easy in a year.
+
+### Configuration shape
+
+One schema, with backend-specific values validated by the backend that owns them:
+
+```toml
+# config.toml — identical meaning on every device
+runtime = ".../Contents/Resources/runtime/nemo-speech"
+model = ".../NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-AD-IQ4_NL.gguf"
+mtp_draft_tokens = 8      # 0 disables; 1-8 is the model's supported range
+idle_unload_seconds = 300
+preload_model = true
+```
+
+Three rules, each learned from something that already went wrong here:
+
+1. **Never silently ignore an unsupported option.** `--asr.salm.mtp_draft 4` was
+   parsed and overridden to 0 with no error, which is how this whole investigation
+   started. An unsupported value must fail loudly at load.
+2. **Every non-default option appears in the identity record.** Otherwise a config
+   difference becomes an unrecorded variable in an A/B.
+3. **`nemo doctor` must report the engine identity and capabilities** — revision,
+   weight hashes, and whether speculative decoding is active — so each device can
+   verify itself instead of being diagnosed by bench mark.
+
+### Per-device checklist
+
+Both machines: Apple Silicon, macOS 26+, same app build. Then
+
+```sh
+cargo xtask install          # or the packaged app for a non-developer machine
+nemo model verify            # existing; unchanged by route A
+nemo doctor                  # engine identity + capabilities
+```
+
+The model downloads once per machine (21.35 GB, hash-checked, resumable). No
+further setup differs between the two laptops.
+
+### What to expect, cumulatively
+
+| | today | cheap wins (§11) | + route A |
+| --- | ---: | ---: | ---: |
+| fixed per request | 135 ms | 105–110 ms | 105–110 ms |
+| slope | 29.70 ms/s | ~29.7 | **~19.3 ms/s** |
+| 1 s ceiling | 26.9 s | ~28 s | **~43 s** |
+| p95 (25.8 s) | 901 ms | ~875 ms | **~605 ms** |
+
+Route A's row uses the measured 1.55x; the middle column is a target, not a result.
+
+## 11. Cheap wins that need no new provisioning
+
+Ordered by payoff per unit of risk, all inside the current runtime and manifest.
+
+1. **The 135 ms fixed cost.** It is 39% of a 5 s dictation and 7% of a 60 s one,
+   and only ~0.5–4.3 ms of it is transport. The remaining ~130 ms is inside the
+   request and has never been broken down. This is the largest non-decode lever in
+   the product and it needs no new dependency at all.
+2. **The endpoint/prompt difference.** `/v1/chat/completions` measured consistently
+   ~23–25 ms faster than `/v1/audio/transcriptions` on identical audio (5 s 285 vs
+   310, 20 s 735 vs 757, 60 s 1891 vs 1914). That is ~8% of a short dictation for a
+   change in `src/backend.rs`. Treat it as a hypothesis from two datasets, not a
+   result: it needs a paired check, and the two paths use different prompts, so
+   token counts and transcripts must be compared, not just timings.
+3. **A different quantization of the same model.** The only weight-side lever that
+   is not speculation, and it can only reach maybe 5–15% because our non-speculative
+   decode already matches MLX's. It is *not* a config line today: the manifest
+   embeds one revision and `Store::decoder()` is `files[0]`, so multiple variants
+   need `Manifest`/`Store` keyed by model id first. Worth doing only if (1) and (2)
+   are exhausted, and it costs a download plus a full WER re-gate.
