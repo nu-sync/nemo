@@ -10,7 +10,10 @@ They are published with the commands that reproduce them; a different machine,
 runtime revision, or model will produce different values.
 
 For the reproducible corpus and the paired A/B harness, see
-[speech benchmarking](benchmarking.md). For the agent workflow around it, see the
+[speech benchmarking](benchmarking.md). For replacing the engine behind these
+numbers with a measurable alternative, see
+[pluggable inference backends](pluggable-inference-backend.md). For the agent
+workflow around it, see the
 [benchmark-nemo skill](../.agents/skills/benchmark-nemo/SKILL.md).
 
 ## 1. System shape
