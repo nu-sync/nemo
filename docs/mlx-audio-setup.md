@@ -92,6 +92,25 @@ nemo quit; open -a "$HOME/Applications/Nemo.app"
 The included engine needs no weights beyond the ones already present and is
 unaffected by anything above.
 
+## One engine process, never more
+
+`scripts/mlx-runner.sh` exists to protect two properties, both learned from a leak that
+put six 25 GB engines on one machine:
+
+- **It `exec`s the interpreter**, so the process a supervisor owns *is* the engine.
+  Launching through a shell or through `uv run` makes the engine a grandchild; killing
+  the owned process then leaves 25 GB resident, and with a wired limit it cannot even be
+  paged out. Reaping only works when the owned PID is the engine.
+- **It refuses to start a third engine.** An A/B needs two at most, so anything beyond
+  that is a leak rather than work. `NEMO_ENGINE_CAP` overrides the cap.
+
+Before and after any paired run, count engines; anything but zero afterwards is a leak:
+
+```sh
+pgrep -f 'environments-v2/mlx-serve.*bin/python' | wc -l
+pkill -f 'environments-v2/mlx-serve.*bin/python'
+```
+
 ## Known gaps in this setup
 
 - **No fallback.** If `uv` disappears or the engine fails to load, dictation is not
