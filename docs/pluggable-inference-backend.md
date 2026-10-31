@@ -183,24 +183,28 @@ apart — which is the failure this whole document exists to prevent.
 Sequenced so each step ends in something verifiable, and each step is worth
 stopping after.
 
-### Milestone 0 — measure MTP on Metal, no download (~half a day)
+### Milestone 0 — DONE: MTP measured, on two different paths
 
-Not a refactor. The point is to find out whether the rest of the plan is worth
-doing.
+Run October 30, 2026. Full record in
+[the MLX-Audio experiment](mlx-audio-experiment.md) and
+`artifacts/mtp-metal/engage-result.md` in the worktree.
 
-- Reconfigure the existing Metal build tree
-  (`vendor/NeMo-Speech.cpp/build/metal-server`, already `GGML_METAL=ON`) with
-  `NEMO_SPEECH_BUILD_EXAMPLES=ON` and build `llama-cli`.
-- Run our current GGUF on the frozen 5/20/60 s WAVs, greedy, on Metal, twice:
-  with the MTP drafter off and on, for `--draft-max` 2/4/8.
-- Record: tokens/s, tokens per verification step, accept rate, transcript.
-- Gate: **≥1.5x on decode with an unchanged transcript**, else stop and report
-  that speculation is not worth a port. That number decides milestones 1–4.
+- **In our own runtime**, removing the four-line `!fast` gate makes
+  `mtp_draft=4` engage for the first time, and `llama_decode` then rejects the
+  draft batch: *"the tokens for sequence 0 … starting position of Y = 78 … it is
+  required that the sequence positions remain consecutive"*. Prefill never ingests
+  the target rows into the drafter. That error is now a reproducible acceptance
+  test for any port.
+- **In MLX-Audio**, draft-and-verify works: **1.55–1.69x wall clock**
+  (5 s 310→183 ms, 20 s 757→449 ms, 60 s 1914→1239 ms), 94–100% acceptance at
+  8.6 tokens per verification step, identical transcripts.
+- **The control:** non-speculative MLX is *the same speed* as our runtime
+  (761 vs 757 ms at 20 s; 1967 vs 1914 ms at 60 s). The whole gain is speculation,
+  not the framework.
 
-If `llama-cli` cannot drive this model's MTP, fall back to the same measurement
-through a ~50 line driver against `common_speculative`. Either way the artifact
-is a script in `scripts/` with its output under `artifacts/`, not a one-off shell
-history.
+`llama-cli` was dropped from the plan: llama.cpp's CLI is a text-LLM tool and
+cannot drive a SALM speech model. The probe went through the runtime's own
+`salm_engine` instead.
 
 ### Milestone 1 — extract the crate, change no behaviour
 
@@ -221,23 +225,15 @@ Verification: `benchmark-corpus.py` A/Bs both behind the shim and reproduces the
 baseline within noise (an A/A through two code paths). This is where identity
 enforcement gets tested for real.
 
-### Milestone 3 — the MTP port, only if Milestone 0 passed
+### Milestone 3 — deliver the 1.6x
 
-Two options, and the order matters:
+Milestone 0 settled the mechanism and the magnitude. What is left is delivery, and
+there are four routes with very different cost. They are analysed in
+[native Rust integration](#7-native-rust-integration-options) below.
 
-1. **Patch the pinned llama.cpp** to carry single-sequence drafter state on the
-   non-batched path, using `llama_state_seq_get_data` / `llama_state_seq_set_data`
-   and `llama_memory_seq_rm` (all already public in `llama.h`). Feasible because
-   Nemo runs `max_sequences = 1`: no slot compaction, and the ~48 MB recurrent
-   state save/restore is ~0.1 ms at 530 GB/s. Adopts with **no** new weights, no
-   new boundary, no accuracy baseline reset.
-2. **MLX-Audio**, which already implements MTP, at the cost of 21.6 GB of new
-   NVFP4 weights, a Python engine, ~24.4 GB resident, and a WER re-gate.
-
-Option 1 first is the strongly preferred reading of the evidence: it is the same
-speedup mechanism, and it keeps the GGUF, the license, the hashes, and the
-process boundary. Option 2 stays available as the independent cross-check if
-option 1 stalls, and both are reachable through the same shim.
+Sequencing recommendation: **bank the win behind the shim first** (a Python helper
+backend, days) and run the full gated corpus through the existing harness, then
+pursue the native port without the pressure of justifying the experiment.
 
 ### Milestone 4 — model and quantization comparisons
 
@@ -253,25 +249,132 @@ branch.
   `stop → visible` cannot be attacked by overlapping decode with recording. That
   door needs a different recognition model, not a different backend.
 - **The 1 s ceiling is the metric.** `(935 ms − fixed) / slope` is the number to
-  move: 26.9 s of dictation today. At decode 1.9x it becomes 43.6 s, at 2.8x
-  56.1 s.
+  move: 26.9 s of dictation today, **44.5 s measured** with MLX + MTP-8
+  (`77 + 19.30 × audio_seconds` against `135 + 29.70 ×`).
 - **One backend ships at a time.** The registry may hold several; only one is
   selected by default and covered by the installed verification.
 
 ## 6. What has not been done
 
-Stated plainly, because the earlier write-up drifted toward "plausible":
+Stated plainly, because an earlier draft of this document drifted toward
+"plausible":
 
-- **No candidate engine has been executed.** No MLX-Audio install, no weight
-  download, no `transcribe-cpp` build. What exists is the physics (530 GB/s peak,
-  283 GB/s achieved), the transport floor, and the source-level gate analysis.
-- **The MTP accept rate on this model is unmeasured on any backend.** It is the
-  one number the whole plan hinges on, and Milestone 0 exists to get it.
-- **MLX-Audio's batch-1 MoE efficiency is unmeasured.** It faces the same
-  bandwidth wall; if its kernels sit at 53% of peak like ours, NVFP4 alone buys
-  11% and only speculation matters.
-- **`llama-cli` has not been built** from the vendored tree, so "it can drive
-  MTP on Metal" is an inference from the public API surface, not a run.
+- **No backend is integrated.** MLX-Audio was measured in-process in Python, not
+  behind `/health` + `/v1/audio/transcriptions`, not through finalization or paste,
+  and not on the full corpus (3 of 12 fixtures, one run, not repeated).
+- **No native MTP port exists.** Our runtime engages the flag and fails in prefill;
+  the recurrent-rollback question is unsolved.
+- **No Rust code has been written.** `crates/nemo-inference` does not exist, and
+  `src/backend.rs` is unchanged.
+- **Identity enforcement is unenforced** and will stay that way until a second
+  backend exists behind the shim.
+
+## 7. Native Rust integration options
+
+"Integrate natively in Rust" admits four meanings. Ordered by what they cost.
+
+### A. Draft-and-verify in the pinned llama.cpp — the native destination
+
+Truly native: vendored C/C++, the C ABI already proven by the native spike, no
+Python, and **no new weights** — the 0.78 GB MTP head is already block 52 of the
+GGUF we ship.
+
+Work: prefill ingestion of target hidden states into the drafter; a draft-ingestion
+adapter for audio-embedding batches (`common/speculative.cpp` explicitly skips
+embedding batches today); and recurrent-state rollback for the hybrid Mamba state,
+either by configuring `cp.n_rs_seq` or by using the already-public
+`llama_state_seq_get_data` / `llama_state_seq_set_data` with `llama_memory_seq_rm`.
+Slot migration is moot at `max_sequences = 1`.
+
+- **Acceptance test already exists**: turn the `positions remain consecutive`
+  failure into a transcript with unchanged reference words.
+- **Expected payoff is the same 1.55x**, because acceptance is a property of the
+  model's MTP head, not of MLX. That is the most useful thing Milestone 0 bought.
+- **Effort**: several engineer-days, with the recurrent rollback as the real risk.
+- **Adopts cheaply**: same binary, same weights, same license, same process
+  boundary, and it inherits every existing test.
+
+### B. Port the model to MLX from Rust — native, new weights, expensive
+
+`mlx-c` (`ml-explore/mlx-c`) is the maintained C API for MLX, and `oxiglade/mlx-rs`
+is an actively maintained unofficial Rust binding to it. So a Rust-only path to
+MLX exists.
+
+But MLX gives you arrays, not this model. The model is Python:
+`mlx_audio/stt/models/nemotron_transcribe/` is 497 lines of model code plus 123
+lines of speculative decoding, on top of mlx-audio's shared feature extractor,
+tokenizer and prompt machinery — and that is before the PEE encoder and Sortformer
+speaker branch. Porting means re-implementing a speech-LLM against an unofficial
+binding, and re-accepting NVFP4 and its license.
+
+Only worth it if we must remove Python **and** route A fails. It is the highest
+effort of the four for the same result.
+
+### C. candle — Rust-native, but still a from-scratch model
+
+Candle is an attractive shape (Rust, Metal, quantized support) and the wrong
+shortcut: `nemotron_h_moe` would still have to be written, and candle has no MTP
+head support. Same effort as B without the reference implementation.
+
+### D. Python helper process — not native, ships in days
+
+MLX-Audio as a supervised helper process behind the shim. Keeps the process
+boundary the design already requires; costs a Python runtime in the app bundle and
+an IPC hop (negligible: the measured request floor is under 5 ms).
+
+**Recommendation: D first to bank the 1.55x, A as the native destination, B only
+if A stalls.** D is also the only route that produces the full-corpus evidence
+route A will need as a baseline.
+
+## 8. Configuration to be aware of
+
+### MLX and the checkpoint
+
+- **`num_draft_tokens` is capped at 8** by the engine ("1–8 draft tokens per
+  verification step"). All of 2, 4 and 8 were measured; 8 wins on every clip. There
+  is no higher setting to try.
+- **Checkpoint choice is forced.** Only the NVIDIA BF16/FP8/NVFP4 checkpoints carry
+  the MTP and CTC heads; the community early-access exports omit both. FP8 expands
+  to BF16 on load (8 GB per token against a 530 GB/s memory system), so NVFP4 is
+  the only viable one.
+- **Speculation requires greedy decoding** (`temperature=0`). A temperature setting
+  would silently disable the entire gain.
+- `max_tokens` was 2048. Transcript tokens run at ~2.87 per audio second, so the
+  current 120 s capture cap needs ~350 and even 300 s needs ~900 — not a limit today,
+  but a real one if the cap were raised without raising this.
+
+### Memory limits
+
+Measured on this laptop: GPU `max_recommended_working_set_size` 115.4 GB of 137 GB,
+MLX default `memory_limit` 130.6 GB, `iogpu.wired_limit_mb = 0` (system default).
+Peak during the run was 25.5 GB, so **no limit tuning was needed**. Knobs exist if a
+larger model or a second engine ever lands: `mx.set_wired_limit`,
+`set_memory_limit`, `set_cache_limit`, `clear_cache`, streams, and
+`mx.enable_compile`. Note `ioctl`-level concerns: a hard GPU allocation failure
+surfaces as a Metal error, not a Python exception, so a helper process is also the
+safer container for this.
+
+### Nemo's own settings
+
+| Setting | Effect here |
+| --- | --- |
+| `idle_unload_seconds` | 25.5 GB and a 5.5 s load make expiry more expensive; retention matters more, not less |
+| `preload_model` | a 5.5 s load makes preloading at launch more attractive than with the 2.6 s runtime |
+| `model_warmup` | still no measured steady-state gain on either engine |
+| `inference_threads`, `encoder_batch_size` | meaningless to MLX; they become **backend-specific** settings |
+
+That last row is a design constraint, not a footnote: backend-specific settings must
+travel in a validated, per-backend options struct that the backend itself rejects
+when invalid, and that struct must appear in the identity record. Otherwise a config
+change becomes an unrecorded variable in an A/B.
+
+## 9. Evidence
+
+Clips, transcripts, timings, acceptance counts, checkpoint hashes and package
+versions: `artifacts/mlx-audio/results.json` in the worktree
+`nemo-inference-backends` on `feat/inference-backends`. The harness is
+`scripts/measure-mlx-audio.py` with its adjacent lock, run through
+`uv run --locked` per repository convention.
 
 ## 10. Multi-device delivery
 
