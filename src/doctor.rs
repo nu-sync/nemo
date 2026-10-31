@@ -120,6 +120,31 @@ pub fn run(config: &Config, color: Color) {
             )
         )
     );
+    for (name, state) in crate::model::Store::profiles() {
+        let ok = state.is_usable();
+        print!(
+            "{}",
+            row(
+                color,
+                if ok { 32 } else { 33 },
+                if ok { "OK" } else { "ABSENT" },
+                &format!(
+                    "Weights [{name}]: {}{}",
+                    if matches!(state, crate::model::ProfileState::Verified) {
+                        "verified"
+                    } else if ok {
+                        "present"
+                    } else {
+                        "not provisioned"
+                    },
+                    state
+                        .reason()
+                        .map(|why| format!(" ({why})"))
+                        .unwrap_or_default()
+                )
+            )
+        );
+    }
     let model = config.check_model_assets().is_ok();
     print!(
         "{}",

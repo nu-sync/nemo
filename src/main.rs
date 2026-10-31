@@ -732,7 +732,9 @@ fn run(mut config: Config) -> Result<()> {
                             backend.unload();
                             let result = match &mut downloader {
                                 Some(downloader) => downloader.download(&canceled),
-                                None => model::Store::managed().verify(&canceled).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
+                                None => model::Store::managed()
+                        .verify_state(&canceled)
+                        .map(|_| ()).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
                             };
                             if downloader
                                 .as_ref()

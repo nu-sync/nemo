@@ -1,5 +1,5 @@
 use crate::{config, storage};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -21,11 +21,59 @@ pub struct Asset {
     pub sha256: String,
 }
 
+/// A named alternative weight set, rooted at its own revision directory.
+#[derive(Clone, Deserialize)]
+pub struct Profile {
+    pub repository: String,
+    pub revision: String,
+    pub files: Vec<Asset>,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct Manifest {
     pub repository: String,
     pub revision: String,
     pub files: Vec<Asset>,
+    /// Additional weight sets. The top-level fields are the default profile, so a
+    /// manifest without this key behaves exactly as it did before.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, Profile>,
+}
+
+/// The profile the shipped configuration selects, i.e. the top-level manifest.
+pub const DEFAULT_PROFILE: &str = "nemo-speech";
+
+/// Provisioning lifecycle of one weight profile.
+///
+/// The invariant this encodes: an unverified profile is never treated as usable.
+/// `Present` means every pinned file exists at its pinned length, which is what the
+/// running engine needs; `Verified` additionally means every SHA-256 matched. Both
+/// are usable, and only these two are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileState {
+    /// Not every pinned file is on disk at the pinned length.
+    Unprovisioned { missing: usize, total: usize },
+    /// Every pinned file is present and the right length; hashes unchecked.
+    Present,
+    /// Every pinned file matched its pinned digest.
+    Verified,
+}
+
+impl ProfileState {
+    /// A usable profile has every pinned file present at the pinned length.
+    pub fn is_usable(self) -> bool {
+        matches!(self, Self::Present | Self::Verified)
+    }
+
+    /// Why a profile cannot be used, for a message a person can act on.
+    pub fn reason(self) -> Option<String> {
+        match self {
+            Self::Unprovisioned { missing, total } => Some(format!(
+                "{missing} of {total} pinned weight files are missing or the wrong size"
+            )),
+            Self::Present | Self::Verified => None,
+        }
+    }
 }
 
 pub fn manifest() -> &'static Manifest {
@@ -50,6 +98,84 @@ impl Store {
         Self {
             directory: data.join("models").join(&manifest().revision),
             manifest: manifest().clone(),
+        }
+    }
+
+    /// A store for a named profile. The default profile is the top-level manifest,
+    /// so this returns the same store for `DEFAULT_PROFILE` as `at`.
+    pub fn profile_at(data: &Path, profile: &str) -> Result<Self> {
+        if profile == DEFAULT_PROFILE {
+            return Ok(Self::at(data));
+        }
+        let manifest = manifest();
+        let selected = manifest.profiles.get(profile).with_context(|| {
+            format!(
+                "Unknown model profile '{profile}'. Known profiles: {}",
+                Self::profile_names().collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        Ok(Self {
+            directory: data.join("models").join(&selected.revision),
+            manifest: Manifest {
+                repository: selected.repository.clone(),
+                revision: selected.revision.clone(),
+                files: selected.files.clone(),
+                profiles: Default::default(),
+            },
+        })
+    }
+
+    /// Every profile the embedded manifest defines, default first.
+    pub fn profile_names() -> impl Iterator<Item = &'static str> {
+        std::iter::once(DEFAULT_PROFILE).chain(manifest().profiles.keys().map(String::as_str))
+    }
+
+    /// Every profile the manifest defines, paired with its observed provisioning
+    /// state. Unknown profiles cannot appear here: the name comes from the manifest.
+    pub fn profiles() -> Vec<(&'static str, ProfileState)> {
+        let data = config::data_dir();
+        Self::profile_names()
+            .filter_map(|name| {
+                let store = Self::profile_at(&data, name).ok()?;
+                Some((name, store.state()))
+            })
+            .collect()
+    }
+
+    /// Observe the provisioning state of this store from the filesystem.
+    pub fn state(&self) -> ProfileState {
+        let total = self.manifest.files.len();
+        let missing = self
+            .manifest
+            .files
+            .iter()
+            .filter(|asset| {
+                !fs::metadata(self.directory.join(&asset.name))
+                    .is_ok_and(|m| m.is_file() && m.len() == asset.bytes)
+            })
+            .count();
+        if missing == 0 {
+            ProfileState::Present
+        } else {
+            ProfileState::Unprovisioned { missing, total }
+        }
+    }
+
+    /// Hash every pinned file and move `Present` to `Verified`.
+    ///
+    /// This is the only transition into `Verified`, and it refuses to run from
+    /// `Unprovisioned`: hashing absent files could only produce a worse message than
+    /// the provisioning state already carries.
+    pub fn verify_state(&self, canceled: &AtomicBool) -> Result<ProfileState> {
+        match self.state() {
+            state @ ProfileState::Unprovisioned { .. } => {
+                bail!("{}", state.reason().unwrap_or_default())
+            }
+            ProfileState::Verified => Ok(ProfileState::Verified),
+            ProfileState::Present => {
+                self.verify(canceled)?;
+                Ok(ProfileState::Verified)
+            }
         }
     }
 
@@ -430,6 +556,7 @@ mod tests {
         Store {
             directory: root.join("managed"),
             manifest: Manifest {
+                profiles: Default::default(),
                 repository: "test/model".into(),
                 revision: "test".into(),
                 files: vec![Asset {
@@ -584,5 +711,121 @@ mod tests {
         );
         assert_eq!(fs::read(store.decoder()).unwrap(), b"previous version");
         assert!(!partial.exists());
+    }
+
+    fn store_with_profiles(root: &std::path::Path) -> Store {
+        Store {
+            directory: root.join("default-rev"),
+            manifest: Manifest {
+                repository: "test/default".into(),
+                revision: "default-rev".into(),
+                files: vec![Asset {
+                    name: "decoder.gguf".into(),
+                    bytes: 4,
+                    sha256: String::new(),
+                }],
+                profiles: [(
+                    "alt".to_string(),
+                    Profile {
+                        repository: "test/alt".into(),
+                        revision: "alt-rev".into(),
+                        files: vec![Asset {
+                            name: "alt.gguf".into(),
+                            bytes: 6,
+                            sha256: String::new(),
+                        }],
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_default_profile_is_the_manifest_top_level() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        let store = store_with_profiles(&root);
+        assert_eq!(
+            store.decoder(),
+            root.join("default-rev").join("decoder.gguf")
+        );
+    }
+
+    #[test]
+    fn a_named_profile_roots_at_its_own_revision_and_names_its_own_decoder() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        let store = store_with_profiles(&root);
+        let alt = Store {
+            directory: root.join("alt-rev"),
+            manifest: Manifest {
+                repository: "test/alt".into(),
+                revision: "alt-rev".into(),
+                files: vec![Asset {
+                    name: "alt.gguf".into(),
+                    bytes: 6,
+                    sha256: String::new(),
+                }],
+                profiles: Default::default(),
+            },
+        };
+        assert_eq!(alt.decoder(), root.join("alt-rev").join("alt.gguf"));
+        assert_eq!(store.manifest.profiles.len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_profile_names_the_profiles_that_exist() {
+        let error = match Store::profile_at(std::path::Path::new("/tmp"), "whisper-cpp") {
+            Ok(_) => panic!("unknown profile must fail"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("whisper-cpp"), "{message}");
+        assert!(message.contains(DEFAULT_PROFILE), "{message}");
+    }
+
+    #[test]
+    fn provisioning_state_accepts_only_files_present_at_the_pinned_length() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        let store = store_with_profiles(&root);
+        std::fs::create_dir_all(&store.directory).unwrap();
+
+        let absent = store.state();
+        assert_eq!(
+            absent,
+            ProfileState::Unprovisioned {
+                missing: 1,
+                total: 1
+            }
+        );
+        assert!(!absent.is_usable());
+        assert!(absent.reason().is_some());
+
+        std::fs::write(store.directory.join("decoder.gguf"), b"prese").unwrap();
+        let wrong = store.state();
+        assert!(!wrong.is_usable(), "a wrong length is not provisioned");
+
+        std::fs::write(store.directory.join("decoder.gguf"), b"GGUF").unwrap();
+        let present = store.state();
+        assert_eq!(present, ProfileState::Present);
+        assert!(present.is_usable());
+        assert!(present.reason().is_none());
+    }
+
+    #[test]
+    fn verification_refuses_to_run_from_unprovisioned_rather_than_reporting_a_hash_error() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().to_path_buf();
+        let store = store_with_profiles(&root);
+        std::fs::create_dir_all(&store.directory).unwrap();
+        let canceled = AtomicBool::new(false);
+        let error = match store.verify_state(&canceled) {
+            Ok(state) => panic!("unprovisioned verify must fail, got {state:?}"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("missing"));
     }
 }
