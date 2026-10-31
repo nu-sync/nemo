@@ -11,6 +11,7 @@ mod model;
 mod network;
 mod output;
 mod permissions;
+mod prerequisite;
 mod readiness;
 mod settings;
 mod shortcut;

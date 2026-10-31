@@ -145,6 +145,33 @@ pub fn run(config: &Config, color: Color) {
             )
         );
     }
+    if config.backend != crate::config::Backend::NemoSpeech {
+        let observed = crate::prerequisite::Observed::current();
+        let state = observed.state();
+        print!(
+            "{}",
+            row(
+                color,
+                if state.is_ready() { 32 } else { 31 },
+                if state.is_ready() { "OK" } else { "MISSING" },
+                &format!(
+                    "Helper tools: {}{}{}",
+                    state
+                        .reason()
+                        .unwrap_or_else(|| "uv and python3 present".to_string()),
+                    state
+                        .remedy()
+                        .map(|command| format!(" -- run: {command}"))
+                        .unwrap_or_default(),
+                    observed
+                        .python
+                        .as_deref()
+                        .map(|v| format!(" ({v})"))
+                        .unwrap_or_default()
+                )
+            )
+        );
+    }
     let model = config.check_model_assets().is_ok();
     print!(
         "{}",
