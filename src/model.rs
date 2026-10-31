@@ -43,6 +43,12 @@ pub struct Manifest {
 /// The profile the shipped configuration selects, i.e. the top-level manifest.
 pub const DEFAULT_PROFILE: &str = "nemo-speech";
 
+/// Records that a profile's files failed their digest check, so the finding survives a
+/// restart. Re-hashing 21.6 GB at every launch is not an option, and a profile that
+/// hashed wrong must not look merely `Present` again once the process restarts - that
+/// is the case where Nemo loads weights nobody vouched for and quietly loses words.
+const CORRUPT_MARKER: &str = ".corrupt";
+
 /// Provisioning lifecycle of one weight profile.
 ///
 /// The invariant this encodes: an unverified profile is never treated as usable.
@@ -162,10 +168,31 @@ impl Store {
                     .is_ok_and(|m| m.is_file() && m.len() == asset.bytes)
             })
             .count();
-        if missing == 0 {
-            ProfileState::Present
+        if missing > 0 {
+            // Absent files are the more actionable problem, and a profile cannot be
+            // corrupt if its files are not even there.
+            return ProfileState::Unprovisioned { missing, total };
+        }
+        match self.recorded_mismatches() {
+            Some(mismatched) => ProfileState::Corrupt { mismatched },
+            None => ProfileState::Present,
+        }
+    }
+
+    /// The mismatch count a previous verification recorded, if any.
+    fn recorded_mismatches(&self) -> Option<usize> {
+        let text = fs::read_to_string(self.directory.join(CORRUPT_MARKER)).ok()?;
+        text.trim().parse().ok()
+    }
+
+    /// Record or clear the failure marker. Best effort: a data directory that cannot be
+    /// written to still reports `Corrupt` for this run, it just cannot remember why.
+    fn record_verification(&self, mismatched: usize) {
+        let marker = self.directory.join(CORRUPT_MARKER);
+        if mismatched == 0 {
+            let _ = fs::remove_file(marker);
         } else {
-            ProfileState::Unprovisioned { missing, total }
+            let _ = fs::write(marker, mismatched.to_string());
         }
     }
 
@@ -180,15 +207,17 @@ impl Store {
                 bail!("{}", state.reason().unwrap_or_default())
             }
             ProfileState::Verified => Ok(ProfileState::Verified),
-            // A mismatch is not repaired by asking again; only new bytes are.
-            corrupt @ ProfileState::Corrupt { .. } => Ok(corrupt),
-            ProfileState::Present => {
+            // An explicit verification re-hashes even when a mismatch was recorded
+            // before: observing a marker is not the same as being asked to check, and
+            // only hashing can tell whether the bytes changed since.
+            ProfileState::Present | ProfileState::Corrupt { .. } => {
                 let mut mismatched = 0;
                 for asset in &self.manifest.files {
                     if verify_file(&self.directory.join(&asset.name), asset, canceled).is_err() {
                         mismatched += 1;
                     }
                 }
+                self.record_verification(mismatched);
                 Ok(if mismatched == 0 {
                     ProfileState::Verified
                 } else {
@@ -226,6 +255,8 @@ impl Store {
             );
             download_asset(&self.directory, asset, &url, canceled, 8)?;
         }
+        // New bytes have replaced whatever failed before.
+        self.record_verification(0);
         Ok(())
     }
 
@@ -892,5 +923,90 @@ mod tests {
         let state = store.verify_state(&canceled).unwrap();
         assert_eq!(state, ProfileState::Verified);
         assert!(state.is_usable());
+    }
+
+    fn profile_store(root: &std::path::Path, bytes: &[u8], digest: &[u8]) -> Store {
+        Store {
+            directory: root.join("managed"),
+            manifest: Manifest {
+                repository: "test/model".into(),
+                revision: "test".into(),
+                files: vec![Asset {
+                    name: "decoder.gguf".into(),
+                    bytes: bytes.len() as u64,
+                    sha256: format!("{:x}", Sha256::digest(digest)),
+                }],
+                profiles: Default::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_recorded_mismatch_outlives_the_process_that_found_it() {
+        let root = tempfile::tempdir().unwrap();
+        let store = profile_store(root.path(), b"GGUF", b"something else");
+        std::fs::create_dir_all(&store.directory).unwrap();
+        std::fs::write(store.directory.join("decoder.gguf"), b"GGUF").unwrap();
+
+        let canceled = AtomicBool::new(false);
+        assert_eq!(
+            store.verify_state(&canceled).unwrap(),
+            ProfileState::Corrupt { mismatched: 1 }
+        );
+
+        // A fresh observation, as a restarted Nemo would make: the sizes still match,
+        // yet the profile must not look usable.
+        assert_eq!(store.state(), ProfileState::Corrupt { mismatched: 1 });
+        assert!(!store.state().is_usable());
+    }
+
+    #[test]
+    fn an_explicit_verification_can_clear_the_record() {
+        let root = tempfile::tempdir().unwrap();
+        let store = profile_store(root.path(), b"GGUF", b"GGUF");
+        std::fs::create_dir_all(&store.directory).unwrap();
+        std::fs::write(store.directory.join("decoder.gguf"), b"GGUF").unwrap();
+        std::fs::write(store.directory.join(".corrupt"), "1").unwrap();
+        assert_eq!(store.state(), ProfileState::Corrupt { mismatched: 1 });
+
+        let canceled = AtomicBool::new(false);
+        assert_eq!(
+            store.verify_state(&canceled).unwrap(),
+            ProfileState::Verified
+        );
+        // Observation can only report what the files show; `Verified` is the answer to an
+        // explicit check. Once the record is gone a fresh observation is `Present`, which
+        // is usable again - the point of clearing it.
+        assert_eq!(store.state(), ProfileState::Present);
+        assert!(store.state().is_usable());
+    }
+
+    #[test]
+    fn missing_files_outrank_a_recorded_mismatch_because_they_are_fixable() {
+        let root = tempfile::tempdir().unwrap();
+        let store = profile_store(root.path(), b"GGUF", b"GGUF");
+        std::fs::create_dir_all(&store.directory).unwrap();
+        std::fs::write(store.directory.join(".corrupt"), "1").unwrap();
+        assert_eq!(
+            store.state(),
+            ProfileState::Unprovisioned {
+                missing: 1,
+                total: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_matching_profile_records_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let store = profile_store(root.path(), b"GGUF", b"GGUF");
+        std::fs::create_dir_all(&store.directory).unwrap();
+        std::fs::write(store.directory.join("decoder.gguf"), b"GGUF").unwrap();
+        let canceled = AtomicBool::new(false);
+        assert_eq!(
+            store.verify_state(&canceled).unwrap(),
+            ProfileState::Verified
+        );
+        assert!(!store.directory.join(".corrupt").exists());
     }
 }
