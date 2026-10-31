@@ -1,17 +1,17 @@
-use crate::{backend::Process, config, storage};
+use crate::{config, storage};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{
         OnceLock,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 #[derive(Clone, Deserialize)]
@@ -71,7 +71,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn download(&self, process: &Process, canceled: &AtomicBool) -> Result<()> {
+    pub fn download(&self, canceled: &AtomicBool) -> Result<()> {
         fs::create_dir_all(&self.directory)?;
         let _lock = storage::Lock::acquire(&self.directory.join("install.lock"))?;
         for asset in &self.manifest.files {
@@ -79,7 +79,7 @@ impl Store {
                 "https://huggingface.co/{}/resolve/{}/{}",
                 self.manifest.repository, self.manifest.revision, asset.name
             );
-            download_asset(&self.directory, asset, &url, process, canceled, 8)?;
+            download_asset(&self.directory, asset, &url, canceled, 8)?;
         }
         Ok(())
     }
@@ -169,7 +169,6 @@ fn download_asset(
     directory: &Path,
     asset: &Asset,
     url: &str,
-    process: &Process,
     canceled: &AtomicBool,
     retries: u8,
 ) -> Result<()> {
@@ -191,42 +190,89 @@ fn download_asset(
         fs::remove_file(&partial)?;
     }
     ensure!(!canceled.load(Ordering::Acquire), "Canceled");
-    let url = resolve_download_url(directory, url, process, canceled)?;
-    let mut command = download_command();
-    command
-        .args([
-            "--fail",
-            "--retry",
-            &retries.to_string(),
-            "--retry-delay",
-            "2",
-            "--connect-timeout",
-            "30",
-            "--speed-limit",
-            "1024",
-            "--speed-time",
-            "60",
-            "--continue-at",
-            "-",
-            "--output",
-        ])
-        .arg(&partial)
-        .args(["--url", &url])
-        .stdin(Stdio::null());
-    process.run(&mut command, canceled)?;
+    let client = download_client()?;
+    let mut result = Ok(());
+    for attempt in 0..=retries {
+        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+        result = transfer(&client, url, &partial, asset.bytes, canceled);
+        if result.is_ok() || canceled.load(Ordering::Acquire) {
+            break;
+        }
+        if attempt < retries {
+            for _ in 0..20 {
+                ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    result?;
     publish(&partial, &target, asset, canceled)?;
     eprintln!("Verified {}", asset.name);
     Ok(())
 }
 
-fn download_command() -> Command {
-    let mut command = Command::new("/usr/bin/curl");
-    command
-        .env_clear()
-        .args(["--disable", "--noproxy", "*", "--proto", "=https"]);
-    #[cfg(test)]
-    command.args(["--proto", "=http,https"]);
-    command
+fn download_client() -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(30))
+        .build()?)
+}
+
+fn transfer(
+    client: &reqwest::blocking::Client,
+    initial: &str,
+    partial: &Path,
+    bytes: u64,
+    canceled: &AtomicBool,
+) -> Result<()> {
+    let url = resolve_download_url(client, initial, canceled)?;
+    ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+    let offset = fs::metadata(partial).map_or(0, |metadata| metadata.len());
+    let mut request = client.get(&url);
+    if offset > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+    }
+    let mut response = request.send()?.error_for_status()?;
+    if offset > 0 {
+        ensure!(
+            response.status() == reqwest::StatusCode::PARTIAL_CONTENT,
+            "Model server did not honor the resume range"
+        );
+        let expected = format!("bytes {offset}-{}/{}", bytes - 1, bytes);
+        ensure!(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                == Some(expected.as_str()),
+            "Invalid model resume range"
+        );
+    } else {
+        ensure!(
+            response.status() == reqwest::StatusCode::OK,
+            "Unexpected model response"
+        );
+    }
+    let mut output = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(partial)?;
+    let mut written = offset;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+        let count = response.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        written += count as u64;
+        ensure!(written <= bytes, "Model response exceeds the pinned size");
+        output.write_all(&buffer[..count])?;
+    }
+    ensure!(written == bytes, "Incomplete model response");
+    Ok(())
 }
 
 fn allowed_download_url(url: &str) -> Result<()> {
@@ -252,55 +298,34 @@ fn allowed_download_url(url: &str) -> Result<()> {
 }
 
 fn resolve_download_url(
-    directory: &Path,
+    client: &reqwest::blocking::Client,
     initial: &str,
-    process: &Process,
     canceled: &AtomicBool,
 ) -> Result<String> {
     #[cfg(test)]
     if initial.starts_with("http://127.0.0.1:") {
         return Ok(initial.to_owned());
     }
-    let metadata = storage::temporary(&directory.join("redirect"));
-    let result = (|| {
-        let mut url = initial.to_owned();
-        for _ in 0..8 {
-            allowed_download_url(&url)?;
-            let mut command = download_command();
-            command
-                .args([
-                    "--head",
-                    "--silent",
-                    "--show-error",
-                    "--fail",
-                    "--max-time",
-                    "30",
-                    "--output",
-                    "/dev/null",
-                    "--write-out",
-                    "%{http_code}\n%{redirect_url}",
-                    "--url",
-                    &url,
-                ])
-                .stdout(Stdio::from(File::create(&metadata)?));
-            process.run(&mut command, canceled)?;
-            let response = fs::read_to_string(&metadata)?;
-            let (status, redirect) = response
-                .split_once('\n')
-                .context("Invalid download response")?;
-            if status.starts_with('2') {
-                return Ok(url);
-            }
-            ensure!(
-                status.starts_with('3') && !redirect.is_empty(),
-                "Unexpected model download response"
-            );
-            url = redirect.to_owned();
+    let mut url = reqwest::Url::parse(initial)?;
+    for _ in 0..8 {
+        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+        allowed_download_url(url.as_str())?;
+        let response = client.head(url.clone()).send()?.error_for_status()?;
+        if response.status().is_success() {
+            return Ok(url.into());
         }
-        anyhow::bail!("Too many model download redirects")
-    })();
-    let _ = fs::remove_file(metadata);
-    result
+        ensure!(
+            response.status().is_redirection(),
+            "Unexpected model download response"
+        );
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .context("Missing model redirect destination")?
+            .to_str()?;
+        url = url.join(location)?;
+    }
+    anyhow::bail!("Too many model download redirects")
 }
 
 fn verify_file(path: &Path, asset: &Asset, canceled: &AtomicBool) -> Result<()> {
@@ -331,6 +356,7 @@ fn verify_file(path: &Path, asset: &Asset, canceled: &AtomicBool) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     #[ignore = "contacts pinned Hugging Face model hosts with HEAD only"]
@@ -346,9 +372,8 @@ mod tests {
                     store.manifest.repository, store.manifest.revision, asset.name
                 );
                 let resolved = resolve_download_url(
-                    &store.directory,
+                    &download_client().unwrap(),
                     &url,
-                    &Process::default(),
                     &AtomicBool::new(false),
                 )
                 .unwrap();
@@ -496,9 +521,8 @@ mod tests {
             )
             .into_bytes(),
         );
-        let process = Process::default();
         let canceled = AtomicBool::new(false);
-        assert!(download_asset(&store.directory, asset, &url, &process, &canceled, 0).is_err());
+        assert!(download_asset(&store.directory, asset, &url, &canceled, 0).is_err());
         server.join().unwrap();
         assert!(!store.decoder().exists());
         assert_eq!(
@@ -508,7 +532,7 @@ mod tests {
         let mut response = format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 5-{}/{}\r\nConnection: close\r\n\r\n", bytes.len() - 5, bytes.len() - 1, bytes.len()).into_bytes();
         response.extend_from_slice(&bytes[5..]);
         let (url, server) = serve(response);
-        download_asset(&store.directory, asset, &url, &process, &canceled, 0).unwrap();
+        download_asset(&store.directory, asset, &url, &canceled, 0).unwrap();
         assert!(
             server
                 .join()
@@ -534,7 +558,6 @@ mod tests {
             &store.directory,
             &store.manifest.files[0],
             "http://127.0.0.1:1/must-not-be-used",
-            &Process::default(),
             &AtomicBool::new(false),
             0,
         )

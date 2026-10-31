@@ -1,4 +1,4 @@
-use crate::{backend::Process, model};
+use crate::model;
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -17,15 +17,22 @@ pub struct Downloader {
     child: Child,
     input: ChildStdin,
     output: ChildStdout,
+    retired: bool,
 }
 
 impl Downloader {
     pub fn spawn() -> Result<Self> {
-        let mut child = Command::new(std::env::current_exe()?)
+        let mut command = Command::new(std::env::current_exe()?);
+        command
             .arg("download-worker")
             .args(["--parent-pid", &std::process::id().to_string()])
             .env_clear()
-            .env("NEMO_DATA_DIR", crate::config::data_dir())
+            .env("NEMO_DATA_DIR", crate::config::data_dir());
+        Self::start(&mut command)
+    }
+
+    fn start(command: &mut Command) -> Result<Self> {
+        let mut child = command
             .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -46,6 +53,7 @@ impl Downloader {
             child,
             input,
             output,
+            retired: false,
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut ready = [0; 6];
@@ -71,8 +79,44 @@ impl Downloader {
         Ok(downloader)
     }
 
+    pub fn retired(&self) -> bool {
+        self.retired
+    }
+
+    fn retire(&mut self) -> Result<()> {
+        if !self.retired {
+            if let Err(error) = self.child.kill()
+                && self.child.try_wait()?.is_none()
+            {
+                return Err(error.into());
+            }
+            self.child.wait()?;
+            self.retired = true;
+        }
+        Ok(())
+    }
+
     pub fn download(&mut self, canceled: &AtomicBool) -> Result<()> {
+        ensure!(
+            !self.retired,
+            "Download helper stopped; reopen Nemo to retry"
+        );
         ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+        match self.request(canceled) {
+            Ok(Some(error)) => bail!("{error}"),
+            Ok(None) => {
+                self.retire()?;
+                ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+                Ok(())
+            }
+            Err(error) => {
+                self.retire()?;
+                Err(error)
+            }
+        }
+    }
+
+    fn request(&mut self, canceled: &AtomicBool) -> Result<Option<String>> {
         self.input.write_all(b"download\n")?;
         let mut response = Vec::new();
         let mut interrupted = false;
@@ -98,12 +142,7 @@ impl Downloader {
                 started = true;
             }
             if response.ends_with(b"\n") {
-                let error: Option<String> = serde_json::from_slice(&response)?;
-                ensure!(!canceled.load(Ordering::Acquire), "Canceled");
-                if let Some(error) = error {
-                    bail!("{error}");
-                }
-                return Ok(());
+                return Ok(serde_json::from_slice(&response)?);
             }
             thread::sleep(Duration::from_millis(50));
         }
@@ -112,8 +151,7 @@ impl Downloader {
 
 impl Drop for Downloader {
     fn drop(&mut self) {
-        unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
-        let _ = self.child.wait();
+        let _ = self.retire();
     }
 }
 
@@ -128,11 +166,8 @@ pub fn worker(parent: u32) -> Result<()> {
     );
     let canceled = Arc::new(AtomicBool::new(false));
     let stopping = canceled.clone();
-    let process = Process::default();
-    let child = process.clone();
     ctrlc::set_handler(move || {
         stopping.store(true, Ordering::Release);
-        child.stop();
     })?;
     thread::spawn(move || {
         loop {
@@ -151,11 +186,92 @@ pub fn worker(parent: u32) -> Result<()> {
         println!("started");
         std::io::stdout().flush()?;
         let error = model::Store::managed()
-            .download(&process, &canceled)
+            .download(&canceled)
             .err()
             .map(|error| format!("{error:#}"));
         println!("{}", serde_json::to_string(&error)?);
         std::io::stdout().flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer(script: &str, directory: &std::path::Path) -> Downloader {
+        Downloader::start(Command::new("/bin/sh").args([
+            "-c",
+            script,
+            "download-fixture",
+            directory.to_str().unwrap(),
+        ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn late_cancellation_reaps_the_successful_helper_before_returning() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut downloader = peer(
+            "trap '' INT; printf 'ready\\n'; read -r request; printf 'started\\n'; touch \"$1/published\"; while ! test -e \"$1/accept\"; do sleep 0.01; done; printf 'null\\n'; read -r request",
+            directory.path(),
+        );
+        let canceled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !directory.path().join("published").exists() {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(5));
+                }
+                canceled.store(true, Ordering::Release);
+                std::fs::write(directory.path().join("accept"), b"").unwrap();
+            });
+            let error = downloader.download(&canceled).unwrap_err();
+            assert_eq!(error.to_string(), "Canceled");
+        });
+        assert!(downloader.retired());
+        assert!(downloader.child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn helper_death_is_reaped_before_reporting_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut downloader = peer(
+            "printf 'ready\\n'; read -r request; kill -KILL $$",
+            directory.path(),
+        );
+        let error = downloader.download(&AtomicBool::new(false)).unwrap_err();
+        assert!(downloader.retired(), "{error:#}");
+        assert!(downloader.child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn interrupted_transfer_can_retry_and_success_retires_the_helper() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut downloader = peer(
+            "printf 'ready\\n'; read -r request; printf 'started\\n\"Canceled\"\\n'; read -r request; printf 'started\\nnull\\n'; read -r request",
+            directory.path(),
+        );
+        let canceled = AtomicBool::new(false);
+        assert_eq!(
+            downloader.download(&canceled).unwrap_err().to_string(),
+            "Canceled"
+        );
+        assert!(!downloader.retired());
+        downloader.download(&canceled).unwrap();
+        assert!(downloader.retired());
+        assert!(downloader.child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn malformed_reply_retires_the_helper() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut downloader = peer(
+            "printf 'ready\\n'; read -r request; printf 'started\\ninvalid-json\\n'; read -r request",
+            directory.path(),
+        );
+        let error = downloader.download(&AtomicBool::new(false)).unwrap_err();
+        assert!(downloader.retired(), "{error:#}");
+    }
 }

@@ -102,8 +102,8 @@ def main():
     parser.add_argument('--output', type=Path, required=True, help='new evidence directory')
     parser.add_argument('--jar', type=Path, default=ROOT / 'artifacts/formal-tools/tla2tools-1.7.4.jar')
     parser.add_argument('--fetch-tools', action='store_true', help='download the pinned developer-only TLC JAR if missing')
-    parser.add_argument('--self-test', action='store_true', help='require four broken models and a scratch Rust edit to be caught')
-    parser.add_argument('--privacy-only', action='store_true', help='omit the stronger ownership/retirement diagnostics with known counterexamples')
+    parser.add_argument('--self-test', action='store_true', help='require five broken models and a scratch Rust edit to be caught')
+    parser.add_argument('--privacy-only', action='store_true', help='omit the stronger ownership/retirement diagnostics for download ownership and retirement')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -130,11 +130,13 @@ def main():
                 ('fail-open', 'FailClosed', 'OperationalConfined'),
                 ('retained-helper', 'RetireHelper', 'OfflineNoDownloadAuthority'),
                 ('helper-audio', 'IsolateHelperAudio', 'HelperHasNoAudio'),
-                ('registered-only-kill', 'KillWholeGroup', 'CleanupRevokesDownloadAuthority'),
+                ('external-download-child', 'ExternalDownloadChild', 'DownloadHasLiveOwner'),
+                ('late-cancel-retains-helper', 'SkipCanceledRetirement', 'UsableModelHasNoDownloadAuthority'),
             ]
             constants = baseline.split('INVARIANTS', 1)[0]
             for name, constant, invariant in mutations:
-                config = constants.replace(f'{constant} = TRUE', f'{constant} = FALSE') + f'INVARIANT {invariant}\n'
+                before, after = ('FALSE', 'TRUE') if constant in ('ExternalDownloadChild', 'SkipCanceledRetirement') else ('TRUE', 'FALSE')
+                config = constants.replace(f'{constant} = {before}', f'{constant} = {after}') + f'INVARIANT {invariant}\n'
                 case = run_case(java, jar, output, name, config)
                 report['cases'][name] = case
                 if case['status'] != 'counterexample' or not any(f'Invariant {invariant} is violated' in line for line in case['violations']):

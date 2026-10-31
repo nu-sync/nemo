@@ -330,12 +330,7 @@ fn execute() -> Result<()> {
             }
             let canceled = Arc::new(AtomicBool::new(false));
             let stopping = canceled.clone();
-            let process = backend::Process::default();
-            let child = process.clone();
-            ctrlc::set_handler(move || {
-                stopping.store(true, Ordering::Release);
-                child.shutdown();
-            })?;
+            ctrlc::set_handler(move || stopping.store(true, Ordering::Release))?;
             match command {
                 ModelCommand::Download => downloader.as_mut().unwrap().download(&canceled)?,
                 ModelCommand::Verify => store.verify(&canceled)?,
@@ -629,7 +624,10 @@ fn run(mut config: Config) -> Result<()> {
                                 Some(downloader) => downloader.download(&canceled),
                                 None => model::Store::managed().verify(&canceled).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
                             };
-                            if result.is_ok() {
+                            if downloader
+                                .as_ref()
+                                .is_some_and(download::Downloader::retired)
+                            {
                                 downloader.take();
                             }
                             (id, result.map(|_| Outcome::ModelDownloaded))

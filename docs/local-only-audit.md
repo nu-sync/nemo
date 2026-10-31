@@ -19,12 +19,13 @@ controller. The private pipe accepts only `download`, with no URL, file contents
 audio or transcript parameter. The helper cannot read ordinary user files, cannot
 use the microphone, can write only its model workspace, and may connect only over
 TCP port 443. It exits after successful acquisition or when its controller dies.
-Its dedicated process group also contains curl, so cleanup includes downloads.
+The helper performs HTTP transfers in-process and its sandbox denies subprocess
+execution, so killing it also ends its download activity.
 
 The helper constructs model URLs from the embedded pinned manifest. It checks
 every HEAD redirect against an explicit HTTPS host list before requesting it;
-the body request does not follow redirects. Curl ignores ambient configuration,
-proxy variables and credentials. Size and SHA-256 must match before publication.
+the body request does not follow redirects. The HTTP client disables proxies and automatic redirects; its requests contain
+no user credentials. Size and SHA-256 must match before publication.
 The OS port restriction and the application host restriction are distinct controls:
 the sandbox does not itself authenticate DNS names. TLS authenticates the approved
 host. Observed downloads redirect from Hugging Face to `us.aws.cdn.hf.co`.
@@ -33,12 +34,13 @@ The menu verifies already-cached weights locally. If files disappear or are
 damaged after startup, use `nemo model download` to repair them, then reopen Nemo;
 the restricted controller cannot grant itself a new external-network capability.
 
-The subsequent [lifecycle model](../verification/offline/README.md) exposes two
-limits to stronger cleanup claims: abrupt helper termination can orphan curl,
-and cancellation after model publication can retain a helper instead of retiring it.
-These are modeled, source-backed failure paths, not demonstrated audio leaks.
-The full diagnostic command deliberately returns findings; the narrower confinement
-invariants pass under the documented OS assumptions.
+The [lifecycle model](../verification/offline/README.md) checks both previously
+failing cleanup properties: transfer activity cannot outlive its helper, and
+publication followed by cancellation must retire the helper before returning to
+idle/recording. Verified success and broken helper protocols terminate and reap
+the helper; ordinary incomplete/canceled transfers retain it for retry. Once the
+helper has died, repair missing models with the explicit CLI and reopen Nemo.
+The full diagnostic is expected to pass under its documented OS assumptions.
 
 Building and installing from source is a separate network-capable workflow:
 Cargo, Homebrew, GitHub/submodules and signing timestamps may contact their servers.

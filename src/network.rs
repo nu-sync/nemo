@@ -26,7 +26,7 @@ pub fn download_only() -> Result<()> {
     std::fs::create_dir_all(data.join("models"))?;
     let path = |path: &std::path::Path| serde_json::to_string(&path.to_string_lossy()).unwrap();
     apply(&format!(
-        "(version 1)(allow default)(deny network*)(deny device-microphone)\n\
+        "(version 1)(allow default)(deny network*)(deny device-microphone)(deny process-exec)\n\
          (allow network-outbound (remote tcp \"*:443\"))\n\
          (allow network* (local unix-socket)(remote unix-socket))\n\
          (deny file-write*)(allow file-write* (subpath {})(literal \"/dev/null\"))\n\
@@ -76,6 +76,13 @@ mod tests {
         const MARKER: &str = "NEMO_DOWNLOAD_SANDBOX_TEST";
         if let Some(secret) = std::env::var_os(MARKER) {
             download_only().unwrap();
+            assert_eq!(
+                Command::new("/usr/bin/true")
+                    .status()
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EPERM)
+            );
             assert_eq!(
                 std::fs::read(crate::config::data_dir().join("models/fixture")).unwrap(),
                 b"model"
