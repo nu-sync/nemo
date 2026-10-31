@@ -1,0 +1,271 @@
+{
+  "scope": "Installed-runtime ASR smoke, not a latency baseline; predictions are evidence, never reference text or model prompts",
+  "created_utc": "2026-10-31T00:15:38Z",
+  "corpus_manifest_sha256": "02992db14220b8c568fabf82f4cd15e1742e426a3b61e44f1ef16ba0b9e505a9",
+  "script_sha256": "c5ec7e8cfffba803f52380d519c189bfdcbf29316e036bbfb1fb6cb633263997",
+  "scoring_sha256": "7c1221b59e2e9d936884ace281fa34a952795a85c8ff12243c6a8bfe82c8bb72",
+  "runtime_sha256": "aae820e841db128f1100b70afebb1c9eaf18d53b2366b179c731a1707763fa14",
+  "decoder_sha256": "0c47d4ab6c783e7606ec03714b354fab0b2052027a7ea1991e7e2d3009c345ad",
+  "encoder_sha256": [
+    "4221029c8a565c4a80c507ffa760c716e595acf663f9f4273ce69910050e7ba2"
+  ],
+  "candidate": {
+    "name": "baseline",
+    "inference_threads": 8,
+    "n_batch": 512,
+    "encoder_max_batch": 1,
+    "startup_warmup": false
+  },
+  "max_wer": 0.05,
+  "state": "complete",
+  "expected_exit": 1,
+  "records": [
+    {
+      "fixture": "005s-lunch",
+      "stage": "first",
+      "text": "Please save a seat near the window. I will bring lunch when the meeting ends.",
+      "accuracy": {
+        "reference_words": 15,
+        "hypothesis_words": 15,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "100s-incident-handoff",
+      "stage": "warm",
+      "text": "This is the handoff for the delayed report incident. The application remained available throughout the morning, but several scheduled reports arrived later than expected. The first alert described a growing queue rather than a complete failure. We checked the database connection pool and the worker logs before changing anything. Both showed that workers were waiting on a slow external request, not on a locked table. We reduced the timeout for that request and restarted one worker as a controlled test. The queue began to shrink without an increase in errors, so we applied the same change to the remaining workers. Reports that were already running were allowed to finish. We did not delete queued work or ask customers to submit their requests again. The support team has a list of the affected accounts and a draft explanation, but nothing has been sent yet. For the next shift, please watch the oldest pending job and the number of retries. A falling queue length by itself is not enough evidence that delivery has recovered. We need to confirm that completed reports actually appear in the customer portal and contain the expected date range. If the external service slows down again, pause the optional enrichment step rather than disabling the entire report pipeline. Tomorrow, we should add a test for this failure mode and decide whether the enrichment task belongs in a separate queue. Keep the temporary timeout change visible in the incident notes until that decision is made.",
+      "accuracy": {
+        "reference_words": 246,
+        "hypothesis_words": 246,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "030s-project-update",
+      "stage": "warm",
+      "text": "Here is a quick update on the search project. The new index is ready for review, and the sample queries now return useful results. We still need to check what happens when a document is removed while a search is running. Please keep the old index available until we have tested the migration on a copy of the data. I would rather spend another day on that check than ask the support team to recover missing records later. After the review, we can choose a launch date.",
+      "accuracy": {
+        "reference_words": 87,
+        "hypothesis_words": 87,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "300s-river-restoration",
+      "stage": "warm",
+      "text": "We apologize for the inconvenience caused by the technical interruption during yesterday's broadcast. Please be advised that we are actively working to resolve the issue and ensure such an occurrence does not happen again. We appreciate your understanding and patience.",
+      "accuracy": {
+        "reference_words": 747,
+        "hypothesis_words": 40,
+        "substitutions": 27,
+        "deletions": 707,
+        "insertions": 0,
+        "errors": 734,
+        "wer": 0.9825970548862115
+      },
+      "status": "accuracy_failed"
+    },
+    {
+      "fixture": "005s-lunch",
+      "stage": "warm",
+      "text": "Please save a seat near the window. I will bring lunch when the meeting ends.",
+      "accuracy": {
+        "reference_words": 15,
+        "hypothesis_words": 15,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "060s-design-review",
+      "stage": "warm",
+      "text": "The purpose of tomorrow's design review is to decide how the import screen should handle interrupted work. We are not choosing colors or rewriting the entire interface. A user should be able to close the window, return later, and understand which files finished and which still need attention. The screen should show a useful summary before offering detailed logs. If a file fails, the retry action must not create a second copy of a file that already succeeded. Please bring examples covering a normal import, a lost connection, and a restart halfway through the queue. We should also consider people using a keyboard or a screen reader. Once we agree on those behaviors, we can divide the implementation into a small set of changes and give each one a concrete acceptance check. I will write down the decisions during the meeting and circulate the notes afterwards, including any questions that remain open.",
+      "accuracy": {
+        "reference_words": 152,
+        "hypothesis_words": 152,
+        "substitutions": 2,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 2,
+        "wer": 0.013157894736842105
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "001s-confirmation",
+      "stage": "warm",
+      "text": "Sounds good.",
+      "accuracy": {
+        "reference_words": 2,
+        "hypothesis_words": 2,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "200s-library-proposal",
+      "stage": "warm",
+      "text": "Flipped classroom is a pedagogical model where students acquire knowledge before class and apply it during class. So in flipped classroom the teacher acts as a facilitator or a coach while the students take more of an active role in their learning process. So it allows for more personalized learning experiences and allows students to learn at their own pace. So what are some of the advantages of flipped classroom that teachers should be aware of? First of all, student engagement. Flipped classroom increases student engagement. Since students have more direct interaction with the teacher and with each other, they tend to stay more focused and on task during class. This is especially helpful for students who need more help. Second of all, active learning. Flipped classroom allows for more active learning in the classroom. Since the teacher is there to guide and help students, students can work through problems together and learn from each other. Third of all, self-paced learning. Flipped classroom allows for self-paced learning. Students can learn at their own pace and review the material as many times as they need to. This is especially helpful for students who need more time to grasp the concepts. Fourth of all, teacher autonomy. Flipped classroom gives teachers more autonomy. Teachers can design their own lessons and activities and can change their approach based on the needs of their students. Now, despite all of these advantages of flipped classroom there are some disadvantages that teachers should be aware of. First of all, technology access. Flipped classroom requires access to technology. Students need to be able to access the videos and other materials online. This can be a problem for students who don't have access to the internet or who don't have a device. Second of all, time. Flipped classroom takes time. Time to create the videos and other materials. This can be a problem for teachers who are short on time. Third of all, student resistance. Flipped classroom can meet with student resistance. Some students may not be used to this type of learning and may not engage with the material before class. This can lead to students not being prepared for class. Fourth of all, limited flexibility. Flipped classroom can be less flexible. If students don't have access to the materials before class, they may not be able to participate in the in-class activities. So, so keep in mind that flipped classroom is not a one size fits all solution. It's important to consider the needs of your students and the context in which you're teaching. When deciding whether to flip your classroom, now, despite the disadvantages, the advantages of flipped classroom often outweigh the disadvantages. So, teachers should consider using flipped classroom in their teaching. Now what are some tips for teachers who want to implement flipped classroom? First of all, start small. Don't try to flip your entire curriculum at once. Start with one lesson or one unit and see how it goes. Second of all, collaborate. Work with other teachers to create videos and activities. This can help to reduce the workload and can also help to ensure that you're all on the same page. Third of all, get feedback. Ask your students for feedback on the flipped classroom approach. This can help you to improve your approach and to address any issues that may arise. Fourth of all, be flexible. Be flexible and be willing to adjust your approach as needed. This can help to ensure that you're meeting the needs of your students. So, flipped classroom can be a powerful tool for teachers. It can increase student engagement, allow for more active learning, and provide students with a more personalized learning experience. However, it's important to consider the disadvantages and to implement flipped classroom in a way that works for your specific context. So, what do you think? Have you tried flipped classroom? Have you seen it implemented in your school or university?",
+      "accuracy": {
+        "reference_words": 499,
+        "hypothesis_words": 662,
+        "substitutions": 456,
+        "deletions": 0,
+        "insertions": 163,
+        "errors": 619,
+        "wer": 1.2404809619238477
+      },
+      "status": "accuracy_failed"
+    },
+    {
+      "fixture": "050s-recipe",
+      "stage": "warm",
+      "text": "For tonight's dinner, start by warming a little olive oil in a wide pan. Add the chopped onion and let it soften slowly while you rinse the rice. Stir in the garlic only after the onion becomes translucent, because garlic burns quickly. Pour in the warm stock a little at a time and keep stirring gently. Meanwhile, roast the mushrooms on a separate tray so their edges become crisp instead of steaming in the pan. When the rice is nearly tender, fold in the peas and a small handful of grated cheese. Taste before adding salt. Serve the mushrooms on top with lemon wedges on the side. If anyone arrives late, keep their portion warm with a splash of stock rather than leaving it over direct heat. Put the remaining cheese in a small bowl on the table.",
+      "accuracy": {
+        "reference_words": 138,
+        "hypothesis_words": 138,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "090s-field-report",
+      "stage": "warm",
+      "text": "Reached the coastal monitoring station shortly after sunrise. The road was clear, but a strong wind had scattered branches across the path from the car park. Before unloading the equipment, we checked the notice board and called the station manager to confirm that the lower trail was open. Our first task was to replace the battery in the weather sensor above the north entrance. The old battery still held a charge, so we labeled it for testing rather than throwing it away. After that, we walked down to the observation platform and photographed the water level against the marked posts. A fishing boat passed just as the second measurement began, and its wake made the reading unreliable. We waited for the surface to settle and repeated the measurement. Both sets of notes will remain in the record with an explanation of why the first reading was rejected. By mid-morning, clouds were gathering beyond the headland, covered the spare instruments, checked that the storage cabinet was locked, and moved the remaining work indoors. The station manager asked us to leave a simple checklist for the next team. I suggested putting the emergency contact details at the top, followed by the equipment checks and the location of the spare keys. We finished the visit by comparing our notes and confirming that every photograph had a matching entry in the field log.",
+      "accuracy": {
+        "reference_words": 231,
+        "hypothesis_words": 230,
+        "substitutions": 2,
+        "deletions": 2,
+        "insertions": 1,
+        "errors": 5,
+        "wer": 0.021645021645021644
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "010s-garden",
+      "stage": "warm",
+      "text": "The tomatoes need water before sunset, but the herbs can wait until tomorrow. Leave the blue watering can beside the gate, and remember to close the garden shed.",
+      "accuracy": {
+        "reference_words": 28,
+        "hypothesis_words": 28,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "040s-customer-feedback",
+      "stage": "warm",
+      "text": "I spoke with a customer who uses the application to prepare notes between appointments. She likes being able to start a recording without switching windows, but she sometimes forgets whether the microphone is still active. A clearer recording indicator would help more than another settings page. She also asked for a way to correct the last sentence without losing the rest of her draft. For now, let us focus on the indicator and make sure it remains visible over a full screen window. We should test that behavior with more than one application before calling it fixed. Please include a short video with the review so everyone can see the same interaction.",
+      "accuracy": {
+        "reference_words": 112,
+        "hypothesis_words": 112,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "020s-weekend",
+      "stage": "warm",
+      "text": "For the weekend trip, pack a rain jacket and comfortable walking shoes. We can take the early train on Saturday, leave our bags at the hotel, and explore the old market before lunch. If the weather turns cold, there is a small museum across the square. We do not need to book tickets in advance.",
+      "accuracy": {
+        "reference_words": 55,
+        "hypothesis_words": 55,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    }
+  ],
+  "stress_confirmation": {
+    "scope": "Fresh server, first request is 200s; same failures reproduced",
+    "created_utc": "2026-10-31T00:21:35Z",
+    "expected_exit": 1,
+    "records": [
+      {
+        "fixture": "200s-library-proposal",
+        "stage": "first",
+        "text": "Flipped classroom is a pedagogical model where students acquire knowledge before class and apply it during class. So in flipped classroom the teacher acts as a facilitator or a coach while the students take more of an active role in their learning process. So it allows for more personalized learning experiences and allows students to learn at their own pace. So what are some of the advantages of flipped classroom that teachers should be aware of? First of all, student engagement. Flipped classroom increases student engagement. Since students have more direct interaction with the teacher and with each other, they tend to stay more focused and on task during class. This is especially helpful for students who need more help. Second of all, active learning. Flipped classroom allows for more active learning in the classroom. Since the teacher is there to guide and help students, students can work through problems together and learn from each other. Third of all, self-paced learning. Flipped classroom allows for self-paced learning. Students can learn at their own pace and review the material as many times as they need to. This is especially helpful for students who need more time to grasp the concepts. Fourth of all, teacher autonomy. Flipped classroom gives teachers more autonomy. Teachers can design their own lessons and activities and can change their approach based on the needs of their students. Now, despite all of these advantages of flipped classroom there are some disadvantages that teachers should be aware of. First of all, technology access. Flipped classroom requires access to technology. Students need to be able to access the videos and other materials online. This can be a problem for students who don't have access to the internet or who don't have a device. Second of all, time. Flipped classroom takes time. Time to create the videos and other materials. This can be a problem for teachers who are short on time. Third of all, student resistance. Flipped classroom can meet with student resistance. Some students may not be used to this type of learning and may not engage with the material before class. This can lead to students not being prepared for class. Fourth of all, limited flexibility. Flipped classroom can be less flexible. If students don't have access to the materials before class, they may not be able to participate in the in-class activities. So, so keep in mind that flipped classroom is not a one size fits all solution. It's important to consider the needs of your students and the context in which you're teaching. When deciding whether to flip your classroom, now, despite the disadvantages, the advantages of flipped classroom often outweigh the disadvantages. So, teachers should consider using flipped classroom in their teaching. Now what are some tips for teachers who want to implement flipped classroom? First of all, start small. Don't try to flip your entire curriculum at once. Start with one lesson or one unit and see how it goes. Second of all, collaborate. Work with other teachers to create videos and activities. This can help to reduce the workload and can also help to ensure that you're all on the same page. Third of all, get feedback. Ask your students for feedback on the flipped classroom approach. This can help you to improve your approach and to address any issues that may arise. Fourth of all, be flexible. Be flexible and be willing to adjust your approach as needed. This can help to ensure that you're meeting the needs of your students. So, flipped classroom can be a powerful tool for teachers. It can increase student engagement, allow for more active learning, and provide students with a more personalized learning experience. However, it's important to consider the disadvantages and to implement flipped classroom in a way that works for your specific context. So, what do you think? Have you tried flipped classroom? Have you seen it implemented in your school or university?",
+        "accuracy": {
+          "reference_words": 499,
+          "hypothesis_words": 662,
+          "substitutions": 456,
+          "deletions": 0,
+          "insertions": 163,
+          "errors": 619,
+          "wer": 1.2404809619238477
+        },
+        "status": "accuracy_failed"
+      },
+      {
+        "fixture": "300s-river-restoration",
+        "stage": "warm",
+        "text": "We apologize for the inconvenience caused by the technical interruption during yesterday's broadcast. Please be advised that we are actively working to resolve the issue and ensure such an occurrence does not happen again. We appreciate your understanding and patience.",
+        "accuracy": {
+          "reference_words": 747,
+          "hypothesis_words": 40,
+          "substitutions": 27,
+          "deletions": 707,
+          "insertions": 0,
+          "errors": 734,
+          "wer": 0.9825970548862115
+        },
+        "status": "accuracy_failed"
+      },
+      {
+        "fixture": "200s-library-proposal",
+        "stage": "warm",
+        "text": "Flipped classroom is a pedagogical model where students acquire knowledge before class and apply it during class. So in flipped classroom the teacher acts as a facilitator or a coach while the students take more of an active role in their learning process. So it allows for more personalized learning experiences and allows students to learn at their own pace. So what are some of the advantages of flipped classroom that teachers should be aware of? First of all, student engagement. Flipped classroom increases student engagement. Since students have more direct interaction with the teacher and with each other, they tend to stay more focused and on task during class. This is especially helpful for students who need more help. Second of all, active learning. Flipped classroom allows for more active learning in the classroom. Since the teacher is there to guide and help students, students can work through problems together and learn from each other. Third of all, self-paced learning. Flipped classroom allows for self-paced learning. Students can learn at their own pace and review the material as many times as they need to. This is especially helpful for students who need more time to grasp the concepts. Fourth of all, teacher autonomy. Flipped classroom gives teachers more autonomy. Teachers can design their own lessons and activities and can change their approach based on the needs of their students. Now, despite all of these advantages of flipped classroom there are some disadvantages that teachers should be aware of. First of all, technology access. Flipped classroom requires access to technology. Students need to be able to access the videos and other materials online. This can be a problem for students who don't have access to the internet or who don't have a device. Second of all, time. Flipped classroom takes time. Time to create the videos and other materials. This can be a problem for teachers who are short on time. Third of all, student resistance. Flipped classroom can meet with student resistance. Some students may not be used to this type of learning and may not engage with the material before class. This can lead to students not being prepared for class. Fourth of all, limited flexibility. Flipped classroom can be less flexible. If students don't have access to the materials before class, they may not be able to participate in the in-class activities. So, so keep in mind that flipped classroom is not a one size fits all solution. It's important to consider the needs of your students and the context in which you're teaching. When deciding whether to flip your classroom, now, despite the disadvantages, the advantages of flipped classroom often outweigh the disadvantages. So, teachers should consider using flipped classroom in their teaching. Now what are some tips for teachers who want to implement flipped classroom? First of all, start small. Don't try to flip your entire curriculum at once. Start with one lesson or one unit and see how it goes. Second of all, collaborate. Work with other teachers to create videos and activities. This can help to reduce the workload and can also help to ensure that you're all on the same page. Third of all, get feedback. Ask your students for feedback on the flipped classroom approach. This can help you to improve your approach and to address any issues that may arise. Fourth of all, be flexible. Be flexible and be willing to adjust your approach as needed. This can help to ensure that you're meeting the needs of your students. So, flipped classroom can be a powerful tool for teachers. It can increase student engagement, allow for more active learning, and provide students with a more personalized learning experience. However, it's important to consider the disadvantages and to implement flipped classroom in a way that works for your specific context. So, what do you think? Have you tried flipped classroom? Have you seen it implemented in your school or university?",
+        "accuracy": {
+          "reference_words": 499,
+          "hypothesis_words": 662,
+          "substitutions": 456,
+          "deletions": 0,
+          "insertions": 163,
+          "errors": 619,
+          "wer": 1.2404809619238477
+        },
+        "status": "accuracy_failed"
+      }
+    ]
+  }
+}

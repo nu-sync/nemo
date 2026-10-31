@@ -1,5 +1,9 @@
 # Performance on the M5 Max
 
+For the versioned synthetic speech corpus and repeatable runtime/model comparison
+harness, see [speech benchmarking](benchmarking.md). It reports per-duration HTTP
+latency and word error rate separately from real installed-app delivery timings.
+
 The [delivery latency update](delivery-latency.md) describes the newer source changes,
 development and installed verification, and paste measurements. The installed-build
 evidence and inference comparisons below describe the October 28 build.

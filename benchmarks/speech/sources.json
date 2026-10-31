@@ -1,0 +1,101 @@
+{
+  "corpus_id": "nemo-synthetic-english-v1",
+  "fixtures": [
+    {
+      "id": "001s-confirmation",
+      "target_seconds": 1,
+      "topic": "confirmation",
+      "voice": "af_heart",
+      "language": "en-us",
+      "text": "text/001s-confirmation.txt"
+    },
+    {
+      "id": "005s-lunch",
+      "target_seconds": 5,
+      "topic": "lunch",
+      "voice": "am_michael",
+      "language": "en-us",
+      "text": "text/005s-lunch.txt"
+    },
+    {
+      "id": "010s-garden",
+      "target_seconds": 10,
+      "topic": "garden",
+      "voice": "bf_emma",
+      "language": "en-gb",
+      "text": "text/010s-garden.txt"
+    },
+    {
+      "id": "020s-weekend",
+      "target_seconds": 20,
+      "topic": "weekend",
+      "voice": "bm_george",
+      "language": "en-gb",
+      "text": "text/020s-weekend.txt"
+    },
+    {
+      "id": "030s-project-update",
+      "target_seconds": 30,
+      "topic": "project-update",
+      "voice": "af_sarah",
+      "language": "en-us",
+      "text": "text/030s-project-update.txt"
+    },
+    {
+      "id": "040s-customer-feedback",
+      "target_seconds": 40,
+      "topic": "customer-feedback",
+      "voice": "am_adam",
+      "language": "en-us",
+      "text": "text/040s-customer-feedback.txt"
+    },
+    {
+      "id": "050s-recipe",
+      "target_seconds": 50,
+      "topic": "recipe",
+      "voice": "bf_isabella",
+      "language": "en-gb",
+      "text": "text/050s-recipe.txt"
+    },
+    {
+      "id": "060s-design-review",
+      "target_seconds": 60,
+      "topic": "design-review",
+      "voice": "bm_daniel",
+      "language": "en-gb",
+      "text": "text/060s-design-review.txt"
+    },
+    {
+      "id": "090s-field-report",
+      "target_seconds": 90,
+      "topic": "field-report",
+      "voice": "af_nicole",
+      "language": "en-us",
+      "text": "text/090s-field-report.txt"
+    },
+    {
+      "id": "100s-incident-handoff",
+      "target_seconds": 100,
+      "topic": "incident-handoff",
+      "voice": "am_fenrir",
+      "language": "en-us",
+      "text": "text/100s-incident-handoff.txt"
+    },
+    {
+      "id": "200s-library-proposal",
+      "target_seconds": 200,
+      "topic": "library-proposal",
+      "voice": "bf_alice",
+      "language": "en-gb",
+      "text": "text/200s-library-proposal.txt"
+    },
+    {
+      "id": "300s-river-restoration",
+      "target_seconds": 300,
+      "topic": "river-restoration",
+      "voice": "bm_lewis",
+      "language": "en-gb",
+      "text": "text/300s-river-restoration.txt"
+    }
+  ]
+}

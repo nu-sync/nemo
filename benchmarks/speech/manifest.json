@@ -1,0 +1,423 @@
+{
+  "schema_version": 1,
+  "corpus_id": "nemo-synthetic-english-v1",
+  "created_utc": "2026-10-31T00:04:33Z",
+  "sources_sha256": "d1995647c3647c0f2b696abfae55abde03eecb26270ddf21b40f3b6958800e2b",
+  "generator": {
+    "script_sha256": "c6eb732e2e8a6d83006270dd8643d24a20ce133ab4b57958cbebe84d012f6232",
+    "lock_sha256": "5c9501b629fccb284a081f4cdfffcd307487761de2ca601c97f3c606b49e92b6",
+    "python": "3.12.12",
+    "os": "macOS-26.5.2-arm64-arm-64bit",
+    "packages": {
+      "kokoro-onnx": "0.6.1",
+      "onnxruntime": "1.31.1",
+      "numpy": "2.5.4",
+      "phonemizer": "3.4.0",
+      "espeakng-loader": "0.2.4"
+    },
+    "tts_assets": {
+      "kokoro-v1.0.onnx": {
+        "url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx",
+        "sha256": "beb0d1848dee9a49da392cc3df26958d46cfa35d321edf434f52949153f0df3a"
+      },
+      "voices-v1.0.bin": {
+        "url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin",
+        "sha256": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
+      }
+    },
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_width": 2
+  },
+  "reference_status": "synthesis-source; not human-listened or independently ASR-certified",
+  "fixtures": [
+    {
+      "id": "001s-confirmation",
+      "target_seconds": 1,
+      "topic": "confirmation",
+      "voice": "af_heart",
+      "language": "en-us",
+      "text": "text/001s-confirmation.txt",
+      "audio": "audio/001s-confirmation.flac",
+      "audio_sha256": "6a01a3cb36ac0a71da8fc02966a8fa680446cffdcc3ba87e9e5161a07fdd6a3e",
+      "text_sha256": "2727adcc75f21c34877041801837bb795baf00fadb7c13e7f0e9f3f0aa147515",
+      "frames": 16000,
+      "seconds": 1.0,
+      "pcm_sha256": "e2ca0537095645257fa786a2c468d6e85c9b56cb4dc734f8f2c57a9a00f2778d",
+      "tail_padding_seconds": 0.0,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 1.0853333333333333
+        },
+        {
+          "speed": 1.1018612521150593,
+          "seconds": 1.0
+        }
+      ]
+    },
+    {
+      "id": "005s-lunch",
+      "target_seconds": 5,
+      "topic": "lunch",
+      "voice": "am_michael",
+      "language": "en-us",
+      "text": "text/005s-lunch.txt",
+      "audio": "audio/005s-lunch.flac",
+      "audio_sha256": "1e10121a388f53d05f3d2d6ab5270fd4a288f1053361a15d4b900f7c1df0b581",
+      "text_sha256": "e1fca3dc58d4ec4401cead141613612282528c3697614e767b15d91f8b2debe5",
+      "frames": 80000,
+      "seconds": 5.0,
+      "pcm_sha256": "094976043edbb66dbb327466d6c8515128f76cbee2134ef00702f2182ae1738b",
+      "tail_padding_seconds": 0.065375,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 4.636625
+        },
+        {
+          "speed": 0.9414467005076144,
+          "seconds": 5.01125
+        },
+        {
+          "speed": 0.9707233502538072,
+          "seconds": 4.934583333333333
+        }
+      ]
+    },
+    {
+      "id": "010s-garden",
+      "target_seconds": 10,
+      "topic": "garden",
+      "voice": "bf_emma",
+      "language": "en-gb",
+      "text": "text/010s-garden.txt",
+      "audio": "audio/010s-garden.flac",
+      "audio_sha256": "1556366c283da3db52fe49f07dd56b26cab65ed5e45ed1670a7aebde7c22d770",
+      "text_sha256": "3815fe63ea9eff8fc2acf71b5444bfcd04855d6e8a22a4db30767be4e97427cb",
+      "frames": 160000,
+      "seconds": 10.0,
+      "pcm_sha256": "4d9d3a29e55504618e14df1faa82ca3701d47103c766ec65da1f6a20b202d58e",
+      "tail_padding_seconds": 0.252625,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 9.46
+        },
+        {
+          "speed": 0.9604060913705585,
+          "seconds": 9.747333333333334
+        }
+      ]
+    },
+    {
+      "id": "020s-weekend",
+      "target_seconds": 20,
+      "topic": "weekend",
+      "voice": "bm_george",
+      "language": "en-gb",
+      "text": "text/020s-weekend.txt",
+      "audio": "audio/020s-weekend.flac",
+      "audio_sha256": "8b32e98e3d86e4262375ac8dd601eb1403fc22899a4f07447489947446e0cf0b",
+      "text_sha256": "20c6c4e514ffcd68c010e7cbc3ae1f4942fe6c12d1775402a36db7c132f1d45a",
+      "frames": 320000,
+      "seconds": 20.0,
+      "pcm_sha256": "6e733090496d781dea19b8c85ffc505d7c0c39c51ce10c2b14a0651ed94473d2",
+      "tail_padding_seconds": 0.226,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 18.292
+        },
+        {
+          "speed": 0.928527918781726,
+          "seconds": 18.910666666666668
+        },
+        {
+          "speed": 0.8913239575012671,
+          "seconds": 19.36
+        },
+        {
+          "speed": 0.875940701381956,
+          "seconds": 19.774
+        }
+      ]
+    },
+    {
+      "id": "030s-project-update",
+      "target_seconds": 30,
+      "topic": "project-update",
+      "voice": "af_sarah",
+      "language": "en-us",
+      "text": "text/030s-project-update.txt",
+      "audio": "audio/030s-project-update.flac",
+      "audio_sha256": "65d682dbb243c5e52111e793e4ccef5ec2ada99905a2b2dc1dbf0e2ff8737ea5",
+      "text_sha256": "22944d72847f3136983732e81de8f3838a8346249e13150f9e51c009d189669d",
+      "frames": 480000,
+      "seconds": 30.0,
+      "pcm_sha256": "d25b9fd23e6aab4756edf4acf6c260cc09f5ce961251d70e5f71693154f291c1",
+      "tail_padding_seconds": 0.71,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 25.310666666666666
+        },
+        {
+          "speed": 0.856536943034405,
+          "seconds": 27.988625
+        },
+        {
+          "speed": 0.8112788933074897,
+          "seconds": 29.289958333333335
+        }
+      ]
+    },
+    {
+      "id": "040s-customer-feedback",
+      "target_seconds": 40,
+      "topic": "customer-feedback",
+      "voice": "am_adam",
+      "language": "en-us",
+      "text": "text/040s-customer-feedback.txt",
+      "audio": "audio/040s-customer-feedback.flac",
+      "audio_sha256": "839b17abb6317e68af16e817054895df48a42753847cd106f34c529437fb7edc",
+      "text_sha256": "5d7cf654f2091b9f35aaba4b3e3b73f5911c48ab5ccbee856dffd6e81c0f06d6",
+      "frames": 640000,
+      "seconds": 40.0,
+      "pcm_sha256": "31debf81db9fdbbd69fd91cbd7072f37981b02e13d093eb681c76fcf4dad911e",
+      "tail_padding_seconds": 1.020625,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 35.61995833333334
+        },
+        {
+          "speed": 0.9040598561759731,
+          "seconds": 37.592666666666666
+        },
+        {
+          "speed": 0.8625893609121311,
+          "seconds": 38.97933333333334
+        }
+      ]
+    },
+    {
+      "id": "050s-recipe",
+      "target_seconds": 50,
+      "topic": "recipe",
+      "voice": "bf_isabella",
+      "language": "en-gb",
+      "text": "text/050s-recipe.txt",
+      "audio": "audio/050s-recipe.flac",
+      "audio_sha256": "288310f4d17fb8f6c31ace6e60ebd5159e3fe32e1cb601ec8295188cf4d44123",
+      "text_sha256": "9536807f796b888e967ea363a2fef6a96f5f8090806b6f1564c3e035a6c6dbdd",
+      "frames": 800000,
+      "seconds": 50.0,
+      "pcm_sha256": "d49c09e9af2eee57c9ab2d06fbac1470af1cbcc8ce4906e3a901ca30e38057bd",
+      "tail_padding_seconds": 1.3266875,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 41.406
+        },
+        {
+          "speed": 0.840730964467005,
+          "seconds": 46.229958333333336
+        },
+        {
+          "speed": 0.7891768011543713,
+          "seconds": 54.04933333333334
+        },
+        {
+          "speed": 0.8149538828106881,
+          "seconds": 48.10733333333334
+        },
+        {
+          "speed": 0.8020653419825297,
+          "seconds": 50.166666666666664
+        },
+        {
+          "speed": 0.8085096123966089,
+          "seconds": 48.673291666666664
+        }
+      ]
+    },
+    {
+      "id": "060s-design-review",
+      "target_seconds": 60,
+      "topic": "design-review",
+      "voice": "bm_daniel",
+      "language": "en-gb",
+      "text": "text/060s-design-review.txt",
+      "audio": "audio/060s-design-review.flac",
+      "audio_sha256": "d51f7d5ec59ec8718cb2e53df5c75f942d425ff42bd62115a9282fc9124c6563",
+      "text_sha256": "37dd0c7c1fc0a2bfc1057eb782d9428087e2973db9c8e940e0f0a8c9080a3b1d",
+      "frames": 960000,
+      "seconds": 60.0,
+      "pcm_sha256": "404c650a5593dbeebeec66aa75a6de16886ad34003caef4db04ee1d67692a4da",
+      "tail_padding_seconds": 0.0793125,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 44.059333333333335
+        },
+        {
+          "speed": 0.7455047941342358,
+          "seconds": 59.92066666666667
+        }
+      ]
+    },
+    {
+      "id": "090s-field-report",
+      "target_seconds": 90,
+      "topic": "field-report",
+      "voice": "af_nicole",
+      "language": "en-us",
+      "text": "text/090s-field-report.txt",
+      "audio": "audio/090s-field-report.flac",
+      "audio_sha256": "724810d9ead41a8c55dda6d057e863dd2e483b4f62fe24a03a84eecc4149c032",
+      "text_sha256": "8a36a8f2ceb10ebc7b3de2f12dd6a94b50e774825c01bf7502f8b2f73197e0b9",
+      "frames": 1440000,
+      "seconds": 90.0,
+      "pcm_sha256": "136a6465feaaf58fa9e570dad4b7bb06ac0c5b188b6073bd3b74e01a56117f12",
+      "tail_padding_seconds": 0.5366875,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 114.81333333333333
+        },
+        {
+          "speed": 1.2951306636585824,
+          "seconds": 92.95795833333334
+        },
+        {
+          "speed": 1.358067707485582,
+          "seconds": 81.02133333333333
+        },
+        {
+          "speed": 1.3265991855720822,
+          "seconds": 89.46329166666666
+        }
+      ]
+    },
+    {
+      "id": "100s-incident-handoff",
+      "target_seconds": 100,
+      "topic": "incident-handoff",
+      "voice": "am_fenrir",
+      "language": "en-us",
+      "text": "text/100s-incident-handoff.txt",
+      "audio": "audio/100s-incident-handoff.flac",
+      "audio_sha256": "2269be1d0025fea188b73662283403d693279db4dd1b991f856101fa65239e14",
+      "text_sha256": "6592e9922651ed7b9c245f9c14c024762accb0174d62ee717a29ed8c92a712f1",
+      "frames": 1600000,
+      "seconds": 100.0,
+      "pcm_sha256": "db573b4b39e2834797c1aa42df1a17b39c7e47867d1bd6be68a307e957838d60",
+      "tail_padding_seconds": 1.555375,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 77.008
+        },
+        {
+          "speed": 0.7818071065989848,
+          "seconds": 101.99729166666667
+        },
+        {
+          "speed": 0.8909035532994924,
+          "seconds": 82.10195833333333
+        },
+        {
+          "speed": 0.8363553299492386,
+          "seconds": 86.72133333333333
+        },
+        {
+          "speed": 0.8090812182741116,
+          "seconds": 89.824625
+        },
+        {
+          "speed": 0.7954441624365483,
+          "seconds": 98.444625
+        }
+      ]
+    },
+    {
+      "id": "200s-library-proposal",
+      "target_seconds": 200,
+      "topic": "library-proposal",
+      "voice": "bf_alice",
+      "language": "en-gb",
+      "text": "text/200s-library-proposal.txt",
+      "audio": "audio/200s-library-proposal.flac",
+      "audio_sha256": "eac7c4f672a4164a021881bb393d704ad11a8e975a9ad7a1dcb4a4299a2ae00a",
+      "text_sha256": "f2ed5e13db5e1543e00eb58ac8ea9567b04b511a818304f1e0f4ddc8481930b8",
+      "frames": 3200000,
+      "seconds": 200.0,
+      "pcm_sha256": "2119e48660c3636ad6963fab22ab228089da792df0468fed10d7e3f6e5f7cc5b",
+      "tail_padding_seconds": 1.2508125,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 156.557
+        },
+        {
+          "speed": 0.7947055837563451,
+          "seconds": 201.67991666666666
+        },
+        {
+          "speed": 0.8973527918781725,
+          "seconds": 165.90191666666666
+        },
+        {
+          "speed": 0.8460291878172588,
+          "seconds": 173.67591666666667
+        },
+        {
+          "speed": 0.8203673857868019,
+          "seconds": 178.2005
+        },
+        {
+          "speed": 0.8075364847715736,
+          "seconds": 182.16908333333333
+        },
+        {
+          "speed": 0.8011210342639594,
+          "seconds": 188.40920833333334
+        },
+        {
+          "speed": 0.7979133090101522,
+          "seconds": 198.74916666666667
+        }
+      ]
+    },
+    {
+      "id": "300s-river-restoration",
+      "target_seconds": 300,
+      "topic": "river-restoration",
+      "voice": "bm_lewis",
+      "language": "en-gb",
+      "text": "text/300s-river-restoration.txt",
+      "audio": "audio/300s-river-restoration.flac",
+      "audio_sha256": "f6ab3681a81f47b348abc482fae328f606d984afdcbcd4451f51a86c407f9948",
+      "text_sha256": "f2d30cc21a9d6bc08719cb2bb5f8e9465a53a209505e8f28dc8c82dd9a85553e",
+      "frames": 4800000,
+      "seconds": 300.0,
+      "pcm_sha256": "c095df6df75a15f7aaba409371fcb71685779754044daf0cf1002d9bbd83faf9",
+      "tail_padding_seconds": 7.794,
+      "synthesis_attempts": [
+        {
+          "speed": 1.0,
+          "seconds": 280.09866666666665
+        },
+        {
+          "speed": 0.9478804286520022,
+          "seconds": 288.6533333333333
+        },
+        {
+          "speed": 0.9259182583141429,
+          "seconds": 292.20595833333334
+        }
+      ]
+    }
+  ]
+}

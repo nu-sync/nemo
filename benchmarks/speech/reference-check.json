@@ -1,0 +1,229 @@
+{
+  "created_utc": "2026-10-31T00:21:08Z",
+  "scope": "independent ASR consistency, not human ground-truth certification; no reference prompting or playback",
+  "corpus_manifest_sha256": "02992db14220b8c568fabf82f4cd15e1742e426a3b61e44f1ef16ba0b9e505a9",
+  "script_sha256": "d0b6087d23f07736cf8aa8918bed9a5793ab7018acc11535f3d2bb23c4ad3ee5",
+  "scoring_sha256": "7c1221b59e2e9d936884ace281fa34a952795a85c8ff12243c6a8bfe82c8bb72",
+  "lock_sha256": "e0f3ce6aadc1f7197d2360f91fd2e7767e14ce712aa20b2463ac45ab05af8b92",
+  "packages": {
+    "faster-whisper": "1.2.1",
+    "ctranslate2": "4.8.4",
+    "huggingface-hub": "0.36.0"
+  },
+  "model": {
+    "repository": "Systran/faster-whisper-base.en",
+    "revision": "3d3d5dee26484f91867d81cb899cfcf72b96be6c",
+    "files": {
+      "model.bin": "2a166925539a16005f14ff328359f9b9adb9dc4fb631bb3b227526862e93e2ef",
+      "config.json": "f3bc3821e9fc76a27bae538e11ae5b677dcdd352b4600429ce7951d398569aeb",
+      "tokenizer.json": "929c5252409436dce1b38a75d1abbcb5e132d170d8e324e4e04ed915fa2d22df",
+      "vocabulary.txt": "ff77588746d3a2595d32ab5b69ffd7b95ce2441ac57533cb66fc3eb575a115cf"
+    }
+  },
+  "options": {
+    "language": "en",
+    "beam_size": 5,
+    "vad_filter": false,
+    "condition_on_previous_text": false,
+    "initial_prompt": null,
+    "device": "cpu",
+    "compute_type": "int8",
+    "cpu_threads": 4
+  },
+  "max_wer": 0.05,
+  "state": "complete",
+  "records": [
+    {
+      "fixture": "001s-confirmation",
+      "audio_sha256": "6a01a3cb36ac0a71da8fc02966a8fa680446cffdcc3ba87e9e5161a07fdd6a3e",
+      "text_sha256": "2727adcc75f21c34877041801837bb795baf00fadb7c13e7f0e9f3f0aa147515",
+      "text": "Sounds good.",
+      "accuracy": {
+        "reference_words": 2,
+        "hypothesis_words": 2,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "005s-lunch",
+      "audio_sha256": "1e10121a388f53d05f3d2d6ab5270fd4a288f1053361a15d4b900f7c1df0b581",
+      "text_sha256": "e1fca3dc58d4ec4401cead141613612282528c3697614e767b15d91f8b2debe5",
+      "text": "Please save a seat near the window. I will bring lunch when the meeting ends.",
+      "accuracy": {
+        "reference_words": 15,
+        "hypothesis_words": 15,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "010s-garden",
+      "audio_sha256": "1556366c283da3db52fe49f07dd56b26cab65ed5e45ed1670a7aebde7c22d770",
+      "text_sha256": "3815fe63ea9eff8fc2acf71b5444bfcd04855d6e8a22a4db30767be4e97427cb",
+      "text": "The tomatoes need water before sunset, but the herbs can wait until tomorrow. Leave the blue watering can beside the gate, and remember to close the garden shed.",
+      "accuracy": {
+        "reference_words": 28,
+        "hypothesis_words": 28,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "020s-weekend",
+      "audio_sha256": "8b32e98e3d86e4262375ac8dd601eb1403fc22899a4f07447489947446e0cf0b",
+      "text_sha256": "20c6c4e514ffcd68c010e7cbc3ae1f4942fe6c12d1775402a36db7c132f1d45a",
+      "text": "For the weekend trip, pack a rain jacket and comfortable walking shoes. We can take the early train on Saturday, leave our bags at the hotel and explore the old market before lunch. If the weather turns cold, there is a small museum across the square. We do not need to book tickets in advance.",
+      "accuracy": {
+        "reference_words": 55,
+        "hypothesis_words": 55,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "030s-project-update",
+      "audio_sha256": "65d682dbb243c5e52111e793e4ccef5ec2ada99905a2b2dc1dbf0e2ff8737ea5",
+      "text_sha256": "22944d72847f3136983732e81de8f3838a8346249e13150f9e51c009d189669d",
+      "text": "Here is a quick update on the search project. The new index is ready for review and the sample queries now return useful results. We still need to check what happens when a document is removed while a search is running. Please keep the old index available until we have tested the migration on a copy of the data. I would rather spend another day on that check than ask the support team to recover missing records later. After the review, we can choose a launch date.",
+      "accuracy": {
+        "reference_words": 87,
+        "hypothesis_words": 87,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "040s-customer-feedback",
+      "audio_sha256": "839b17abb6317e68af16e817054895df48a42753847cd106f34c529437fb7edc",
+      "text_sha256": "5d7cf654f2091b9f35aaba4b3e3b73f5911c48ab5ccbee856dffd6e81c0f06d6",
+      "text": "I spoke with a customer who uses the application to prepare notes between appointments. She likes being able to start a recording without switching windows, but she sometimes forgets whether the microphone is still active. A clearer recording indicator would help more than another settings page. She also asked for a way to correct the last sentence without losing the rest of her draft. For now, let us focus on the indicator and make sure it remains visible over a full screen window. test that behavior with more than one application before calling it fixed. Please include a short video with the review so everyone can see the same interaction.",
+      "accuracy": {
+        "reference_words": 112,
+        "hypothesis_words": 110,
+        "substitutions": 0,
+        "deletions": 2,
+        "insertions": 0,
+        "errors": 2,
+        "wer": 0.017857142857142856
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "050s-recipe",
+      "audio_sha256": "288310f4d17fb8f6c31ace6e60ebd5159e3fe32e1cb601ec8295188cf4d44123",
+      "text_sha256": "9536807f796b888e967ea363a2fef6a96f5f8090806b6f1564c3e035a6c6dbdd",
+      "text": "For tonight's dinner, start by warming a little olive oil in a wide pan. Add the chopped onion and let it soften slowly while you rinse the rice. Stir in the garlic only after the onion becomes translucent because garlic burns quickly. Pour in the warm stock a little at a time and keep stirring gently. Meanwhile, roast the mushrooms on a separate tray so their edges become crisp instead of steaming in the pan. When the rice is nearly tender, fold in the peas and a small handful of grated cheese, taste before adding salt, serve the mushrooms on top with lemon wedges on the side. If anyone arrives late, keep their portion warm with a splash of stock rather than leaving it over direct heat. Put the remaining cheese in a small bowl on the table.",
+      "accuracy": {
+        "reference_words": 138,
+        "hypothesis_words": 138,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 0,
+        "wer": 0.0
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "060s-design-review",
+      "audio_sha256": "d51f7d5ec59ec8718cb2e53df5c75f942d425ff42bd62115a9282fc9124c6563",
+      "text_sha256": "37dd0c7c1fc0a2bfc1057eb782d9428087e2973db9c8e940e0f0a8c9080a3b1d",
+      "text": "The purpose of tomorrow's design review is to decide how the import screen should handle interrupted work. We are not choosing colors or rewriting the entire interface. A user should be able to close the window, return later, and understand which files finished and which still need attention. The screen should show a useful summary before offering detailed logs. If a file fails, the retry action must not create a second copy of a file that already succeeded. Please bring examples covering a normal import, a lost connection and a restart halfway through the queue. We should also consider people using a keyboard or a screen reader. Once we agree on those behaviors, we can divide the implementation into a small set of changes and give each one a concrete acceptance check. I will write down the decisions during the meeting and circulate the notes afterwards, including any questions that remain open.",
+      "accuracy": {
+        "reference_words": 152,
+        "hypothesis_words": 152,
+        "substitutions": 2,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 2,
+        "wer": 0.013157894736842105
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "090s-field-report",
+      "audio_sha256": "724810d9ead41a8c55dda6d057e863dd2e483b4f62fe24a03a84eecc4149c032",
+      "text_sha256": "8a36a8f2ceb10ebc7b3de2f12dd6a94b50e774825c01bf7502f8b2f73197e0b9",
+      "text": "reached the coastal monitoring station shortly after sunrise. The road was clear, but a strong wind had scattered branches across the path from the car park. Before unloading the equipment, we checked the notice board and called the station manager to confirm that the lower trail was open. Our first task was to replace the battery in the weather sensor above the north entrance. The old battery still held a charge, So we labeled it for testing, rather than throwing it away. After that, we walked down to the observation platform and foregrounded the water level against the marked posts. A fishing boat passed just as the second measurement began, and its wake made the reading unreliable. We waited for the surface to settle and repeated the measurement. Both sets of notes will remain in the record with an explanation of why the first reading was rejected. By mid-morning, clouds were gathering beyond the headland, covered the spare instruments, checked that the storage cabinet was locked, and moved the remaining work indoors. The station manager asked us to leave a simple checklist for the next team. I suggested putting the emergency contact details at the top, followed by the equipment checks, and the location of the spare keys. finished the visit by comparing our notes and confirming that every photograph had a matching entry in the field log.",
+      "accuracy": {
+        "reference_words": 231,
+        "hypothesis_words": 229,
+        "substitutions": 3,
+        "deletions": 3,
+        "insertions": 1,
+        "errors": 7,
+        "wer": 0.030303030303030304
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "100s-incident-handoff",
+      "audio_sha256": "2269be1d0025fea188b73662283403d693279db4dd1b991f856101fa65239e14",
+      "text_sha256": "6592e9922651ed7b9c245f9c14c024762accb0174d62ee717a29ed8c92a712f1",
+      "text": "This is the handoff for the delayed report incident. The application remained available throughout the morning, but several scheduled reports arrived later than expected. The first alert described a growing cue rather than a complete failure. We checked the database connection pool and the worker logs before changing anything. Both showed that workers were waiting on a slow external request, not on a locked table. We reduced the timeout for that request and restarted one worker as a controlled test. The queue began to shrink without an increase in errors, so we applied the same change to the remaining workers. Reports that were already running were allowed to finish. We did not delete queued work or ask customers to submit their requests again. The support team has a list of the affected accounts and a draft explanation, but nothing has been sent yet. For the next shift, please watch the oldest pending job and the number of retries. A falling queue length by itself is not enough evidence that delivery has recovered. We need to confirm that completed reports actually appear in the customer portal and contain the expected date range. If the external service slows down again, pause the optional enrichment step rather than disabling the entire report pipeline. Tomorrow, we should add a test for this failure mode and decide whether the enrichment task belongs in a separate queue. Keep the temporary timeout change visible in the incident notes until that decision is made. You",
+      "accuracy": {
+        "reference_words": 246,
+        "hypothesis_words": 247,
+        "substitutions": 1,
+        "deletions": 0,
+        "insertions": 1,
+        "errors": 2,
+        "wer": 0.008130081300813009
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "200s-library-proposal",
+      "audio_sha256": "eac7c4f672a4164a021881bb393d704ad11a8e975a9ad7a1dcb4a4299a2ae00a",
+      "text_sha256": "f2ed5e13db5e1543e00eb58ac8ea9567b04b511a818304f1e0f4ddc8481930b8",
+      "text": "I would like to propose a small change to the way our neighbourhood library welcomes new members. At the moment, the first visit involves several separate conversations. Someone explains the borrowing rules at the desk. Another person points out the reading rooms and a printed leaflet describes the online catalogue. Each part is useful, but it is easy to miss something when the building is busy. A short optional orientation could bring those pieces together without replacing the personal welcome. The orientation should begin with what a visitor can do today, show where to return a book, how to find a reserved item and where to ask for help, explain which areas are quiet and which are intended for group work, avoid beginning with a long list of penalties. People are more likely to remember a rule when they understand the service it protects. For example, returning a reserved book on time helps the next reader plan a visit. That explanation is clearer than presenting a fine without any context. We could test the idea on two afternoons with volunteers rather than changing the permanent schedule immediately. One volunteer would guide a small group around the ground floor while another remained at the desk. Visitors who prefer not to join a group could take a large print map or ask for a brief individual explanation. We should make it clear that joining the orientation is not a condition of membership. It is simply another way to become comfortable using the building. The map deserves particular attention. It should use the same names as the signs on the shelves and include the accessible entrance, the lift and the nearest public transport stop. A beautiful map is not helpful if its labels differ from the words a visitor sees on the wall. Before printing a large batch, ask someone unfamiliar with the building to follow it without assistance. Watch where they hesitate, then revise the confusing parts. That practical check will teach us more than a discussion about whether the design looks finished. We should also consider visitors who cannot attend in person. A plain text version of the orientation can explain how to search the catalogue, request a delivery and contact a librarian. It should work on a small screen and should not require an account merely to read the instructions. Translations can follow once the original wording is stable, keeping the source text short will make both translation and future maintenance easier. At the end of the trial, we can compare staff observations with a few voluntary comments from visitors. We do not need to collect names or detailed personal information. The questions are straightforward. Did people find the service they wanted? Did the orientation reduce confusion and could staff run it without neglecting other duties? If the answers are encouraging, we can keep the useful parts and adjust the rest. The goal is a more welcoming first visit, not a new program that creates work without helping anyone.",
+      "accuracy": {
+        "reference_words": 499,
+        "hypothesis_words": 499,
+        "substitutions": 1,
+        "deletions": 0,
+        "insertions": 0,
+        "errors": 1,
+        "wer": 0.002004008016032064
+      },
+      "status": "ok"
+    },
+    {
+      "fixture": "300s-river-restoration",
+      "audio_sha256": "f6ab3681a81f47b348abc482fae328f606d984afdcbcd4451f51a86c407f9948",
+      "text_sha256": "f2d30cc21a9d6bc08719cb2bb5f8e9465a53a209505e8f28dc8c82dd9a85553e",
+      "text": "These are my notes from the planning workshop on restoring the river path. The discussion began with a walk along the eastern bank where the existing surface narrows beneath the willow trees. After rain, water collects in shallow channels and leaves a slippery layer of mud. Several residents said they avoid that section during winter, even though it is the shortest route to the shops. The project should make the path more dependable without turning the riverbank into a paved road. first proposal was to raise the entire route and add a continuous barrier beside the water. That would create a clear edge, but it would also change the character of the place and might push floodwater towards nearby gardens. The landscape team suggested a more selective approach. Repair the worst sections, improve drainage where the ground allows it and leave space for water to move during a flood. We agreed that a decision about the surface cannot be separated from a decision about drainage. Access was the next topic. A path that is technically open may still be difficult for someone using a wheelchair, pushing a pram, or carrying shopping. Gates should be easy to operate with one hand, and passing places should be visible before the path narrows. Benches need a firm area beside them so that people can sit together without blocking the route. These details are inexpensive when included in the plan and frustratingly expensive when added after construction. The wildlife group asked us to keep several areas deliberately quiet. Birds nest in the low scrub near the bend and bats feed above the slower water after sunset. Lighting the entire bank would make evening walking easier, but it could disturb both habitats, rather than treating lighting as a choice between everywhere and nowhere. We can identify the crossings and entrances that need it most. Any fixtures should direct light towards the ground and be tested from the opposite bank before the final layout is approved. Maintenance will determine whether the improvements last. A new surface may perform well in its first summer and still fail after two wet winters if nobody clears the drains. The council team offered to describe the equipment they already use and the width they need to reach each section safely. Volunteers can help remove litter and report damage, but they should not be expected to inspect unstable banks or operate heavy machinery. The maintenance plan must distinguish ordinary community work from tasks requiring trained staff. Several people raised concerns about construction noise and temporary closures. The shops rely on foot traffic and the riverside houses have very little space for deliveries. We should publish a simple sequence showing which section will close first, where pedestrians will be diverted and when access is expected to return. If the schedule changes, the signs at the actual entrances need updating as well as the website. A notice hidden behind a fence is not a useful notice, however accurate its wording may be. Funding remains uncertain so the design should support a sensible first phase. We can prioritise the damaged crossing and the two sections that become impassable after heavy rain. Planting and additional seating can follow when funding is confirmed, provided the first phase leaves room for them. This is different from building temporary work that must be removed later. Each completed section should remain useful on its own and should fit the eventual route without forcing another round of excavation. Before the next meeting the engineering team will check the drainage assumptions against recent flood records. The access group will review the proposed gates and turning spaces. The wildlife group will mark the most sensitive areas on a shared map and the council will estimate the annual maintenance effort. Each group should state what evidence supports its recommendation and what remains uncertain. That will help us resolve disagreements about trade-offs rather than arguing from different unstated assumptions. My final suggestion is to evaluate the project through an ordinary journey. Imagine someone leaving home on a damp afternoon, reaching the river entrance, passing another walker, resting briefly, and continuing to the shops. Can they understand the route, use it comfortably, and return without meeting an unexpected obstacle? We should repeat that exercise after construction and after the first winter. Success is not merely finishing the work on schedule. It is a route that stays useful, respects the river and can be maintained with the people and resources actually available.",
+      "accuracy": {
+        "reference_words": 747,
+        "hypothesis_words": 747,
+        "substitutions": 1,
+        "deletions": 1,
+        "insertions": 1,
+        "errors": 3,
+        "wer": 0.004016064257028112
+      },
+      "status": "ok"
+    }
+  ]
+}

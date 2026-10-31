@@ -20,6 +20,8 @@ Nemo is a local dictation app for Apple Silicon Macs running macOS 26+. The Rust
 
 Run commands from the repository root. Use Rust, Homebrew, and Xcode Command Line Tools. Python 3.11+ is only needed for optional diagnostic scripts.
 
+Run all Python scripting through **uv**: use `uv run --no-project` for standard-library scripts and `uv run --no-project python -m unittest` for Python tests. Use `uv run --locked` for scripts with inline dependencies and adjacent lockfiles. Do not install global Python packages or introduce a root Python project for these optional helpers.
+
 - `cargo build --release --locked`: build `target/release/nemo`.
 - `cargo run --locked -- run`: start the development daemon directly.
 - `cargo xtask check`: run formatting, Clippy with warnings denied, and workspace tests. No model or microphone permissions required.
