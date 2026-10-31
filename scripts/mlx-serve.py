@@ -29,6 +29,10 @@ from pathlib import Path
 
 CACHE = Path.home() / "Library/Caches/nemo-mlx/NVFP4"
 DRAFT = int(os.environ.get("NEMO_MLX_DRAFT", "8"))
+WIRED = int(os.environ.get("NEMO_MLX_WIRED", "0") or 0)
+CACHE = int(os.environ.get("NEMO_MLX_CACHE", "0") or 0)
+WARMUP = os.environ.get("NEMO_MLX_WARMUP") == "1"
+COMPILE = os.environ.get("NEMO_MLX_COMPILE") == "1"
 
 
 def parse(argv):
@@ -106,8 +110,24 @@ def main():
     args = parse(sys.argv[1:])
     from mlx_audio.stt import load
 
-    print(f"[mlx-serve] loading {CACHE} draft={DRAFT}", flush=True)
-    Handler.model = load(str(CACHE), strict=True)
+    import mlx.core as mx
+    if WIRED:
+        mx.set_wired_limit(WIRED)
+    if CACHE:
+        mx.set_cache_limit(CACHE)
+    if COMPILE:
+        mx.enable_compile()
+    print(f"[mlx-serve] loading draft={DRAFT} wired={WIRED} cache={CACHE} warmup={WARMUP} compile={COMPILE}", flush=True)
+    Handler.model = load(str(Path.home() / "Library/Caches/nemo-mlx/NVFP4"), strict=True)
+    if WARMUP:
+        # pay Metal kernel compilation on a throwaway request, not the user's first
+        import wave
+        probe = Path.home() / "Library/Caches/nemo-mlx/warmup.wav"
+        if not probe.exists():
+            with wave.open(str(probe), "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+                w.writeframes(b"\x00\x00" * 16000)
+        Handler.model.generate(str(probe), speculative=DRAFT > 0, num_draft_tokens=DRAFT or 4, temperature=0, max_tokens=32)
     Handler.key = args.api_key
     server = HTTPServer((args.host, args.port), Handler)
     print(f"HTTP API listening on http://{args.host}:{args.port}", flush=True)
