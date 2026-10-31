@@ -2,6 +2,8 @@
 
 For the agent workflow, use the [benchmark-nemo skill](../.agents/skills/benchmark-nemo/SKILL.md)
 for bounded experiments, paired accuracy/latency gates, evidence, and cleanup.
+For what the request actually does and where its milliseconds go, see
+[the inference pipeline](inference-pipeline.md).
 
 Nemo's benchmark corpus covers exact file durations of **1, 5, 10, 20, 30, 40,
 50, 60, 90, 100, 200, and 300 seconds**. Each clip has an original, distinct

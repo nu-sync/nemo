@@ -4,6 +4,9 @@ For the versioned synthetic speech corpus and repeatable runtime/model compariso
 harness, see [speech benchmarking](benchmarking.md). It reports per-duration HTTP
 latency and word error rate separately from real installed-app delivery timings.
 
+For how a dictation becomes text, which stage costs what, and how to find a
+bottleneck before optimizing it, see [the inference pipeline](inference-pipeline.md).
+
 The [delivery latency update](delivery-latency.md) describes the newer source changes,
 development and installed verification, and paste measurements. The installed-build
 evidence and inference comparisons below describe the October 28 build.
