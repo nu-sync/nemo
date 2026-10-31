@@ -864,7 +864,7 @@ fn run(mut config: Config) -> Result<()> {
                 registered,
                 input,
                 model_present,
-                config.runtime.is_file(),
+                config.runtime_path().is_file(),
             );
             let mut previous = readiness.lock().unwrap();
             if *previous != snapshot {

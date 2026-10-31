@@ -171,7 +171,7 @@ impl Backend {
         let log = File::create(config::data_dir().join("inference.log"))?;
         use std::os::unix::fs::PermissionsExt;
         log.set_permissions(fs::Permissions::from_mode(0o600))?;
-        let mut command = crate::network::inference_command(&self.config.runtime);
+        let mut command = crate::network::inference_command(&self.config.runtime_path());
         command
             .args(["serve", "--asr-model"])
             .arg(&self.config.model)

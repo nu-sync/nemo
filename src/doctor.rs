@@ -105,14 +105,19 @@ pub fn run(config: &Config, color: Color) {
         }
     }
     println!();
-    let runtime = config.runtime.is_file();
+    let runtime_path = config.runtime_path();
+    let runtime = runtime_path.is_file();
     print!(
         "{}",
         row(
             color,
             if runtime { 32 } else { 31 },
             if runtime { "OK" } else { "MISSING" },
-            &format!("Runtime: {}", config.runtime.display())
+            &format!(
+                "Runtime ({}): {}",
+                config.backend.label(),
+                runtime_path.display()
+            )
         )
     );
     let model = config.check_model_assets().is_ok();
