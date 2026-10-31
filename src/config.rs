@@ -216,6 +216,25 @@ impl Config {
         }
     }
 
+    /// The configuration that runs the included engine, for when the selected engine
+    /// fails.
+    ///
+    /// The selected engine owns `runtime` and `model`, so falling back rebuilds those two
+    /// from the shipped defaults while keeping every setting that has nothing to do with
+    /// the engine. Returns `None` when the included engine is already selected, because
+    /// there is nothing behind it.
+    pub fn included(&self) -> Option<Self> {
+        if self.backend == Backend::NemoSpeech {
+            return None;
+        }
+        Some(Self {
+            backend: Backend::NemoSpeech,
+            runtime: default_runtime(),
+            model: crate::model::Store::managed().decoder(),
+            ..self.clone()
+        })
+    }
+
     pub fn check_assets(&self) -> Result<()> {
         ensure!(
             self.runtime_path().is_file(),

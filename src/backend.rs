@@ -139,6 +139,12 @@ impl Backend {
         self.process.endpoint().ok().flatten().is_some()
     }
 
+    /// The engine this process runs, for status and for telemetry that has to attribute a
+    /// latency to a specific engine.
+    pub fn backend(&self) -> crate::config::Backend {
+        self.config.backend
+    }
+
     pub fn unload(&mut self) -> bool {
         self.process.0.lock().unwrap().retire(false)
     }
@@ -154,6 +160,7 @@ impl Backend {
             "{}",
             serde_json::json!({
                 "event": "model_load",
+                "engine": self.backend().label(),
                 "load_ms": started.elapsed().as_secs_f64() * 1000.0,
                 "success": result.is_ok(),
             })
@@ -325,6 +332,7 @@ impl Backend {
             "{}",
             serde_json::json!({
                 "event": "transcription",
+                "engine": self.backend().label(),
                 "audio_seconds": audio_seconds,
                 "model_load_ms": model_load_ms,
                 "request_ms": request_ms,

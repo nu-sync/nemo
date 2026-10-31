@@ -6,6 +6,7 @@ mod config;
 mod control;
 mod doctor;
 mod download;
+mod engines;
 mod indicator;
 mod model;
 mod network;
@@ -584,8 +585,8 @@ fn execute() -> Result<()> {
             let stopping = process.clone();
             ctrlc::set_handler(move || stopping.shutdown())?;
             let remove_trailing_period = config.remove_trailing_period;
-            let mut backend = backend::Backend::new(config, process)?;
-            let text = backend.transcribe(fs::read(file)?, &AtomicBool::new(false))?;
+            let mut engines = engines::Engines::new(config, process, engines::Status::default())?;
+            let text = engines.transcribe(fs::read(file)?, &AtomicBool::new(false))?;
             let text = output::format_transcript(&text, remove_trailing_period);
             if copy || paste {
                 output::deliver(text, paste, &AtomicBool::new(false))?;
@@ -769,9 +770,12 @@ fn run(mut config: Config) -> Result<()> {
     }));
 
     let status = Arc::new(Mutex::new(String::from("Idle")));
+    // Set only when the selected engine failed and the included one took over.
+    let engine_status = engines::Status::default();
     let executable_sha256 = nemo_build::sha256(&std::env::current_exe()?)?;
     let socket_status = status.clone();
     let socket_readiness = readiness.clone();
+    let socket_engine = engine_status.clone();
     let proxy = event_loop.create_proxy();
     let listener = server.listener.try_clone()?;
     thread::spawn(move || {
@@ -784,7 +788,12 @@ fn run(mut config: Config) -> Result<()> {
             let command = command.trim();
             let response = if command == "status" {
                 let snapshot = socket_readiness.lock().unwrap();
-                format!("{} · {}", snapshot.summary(), socket_status.lock().unwrap())
+                let reported =
+                    format!("{} · {}", snapshot.summary(), socket_status.lock().unwrap());
+                match socket_engine.lock().unwrap().clone() {
+                    Some(engine) => format!("{reported} · {engine}"),
+                    None => reported,
+                }
             } else if command == "readiness" {
                 serde_json::to_string(&*socket_readiness.lock().unwrap()).unwrap()
             } else if command == "permissions" {
@@ -821,7 +830,8 @@ fn run(mut config: Config) -> Result<()> {
     });
 
     let process = backend::Process::default();
-    let mut backend = backend::Backend::new(config.clone(), process.clone())?;
+    let mut backend =
+        engines::Engines::new(config.clone(), process.clone(), engine_status.clone())?;
     let (jobs, receiver) = mpsc::channel();
     let proxy = event_loop.create_proxy();
     let idle_timeout = Duration::from_secs(config.idle_unload_seconds);
