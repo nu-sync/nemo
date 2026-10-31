@@ -17,7 +17,17 @@ pub struct Downloader {
     child: Child,
     input: ChildStdin,
     output: ChildStdout,
-    retired: bool,
+    state: HelperState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelperState {
+    Starting,
+    Ready,
+    AwaitingStart,
+    Downloading,
+    CancelRequested,
+    Retired,
 }
 
 impl Downloader {
@@ -53,7 +63,7 @@ impl Downloader {
             child,
             input,
             output,
-            retired: false,
+            state: HelperState::Starting,
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut ready = [0; 6];
@@ -76,34 +86,38 @@ impl Downloader {
             &ready == b"ready\n",
             "Invalid model download helper greeting"
         );
+        downloader.state = HelperState::Ready;
         Ok(downloader)
     }
 
     pub fn retired(&self) -> bool {
-        self.retired
+        self.state == HelperState::Retired
     }
 
     fn retire(&mut self) -> Result<()> {
-        if !self.retired {
+        if !self.retired() {
             if let Err(error) = self.child.kill()
                 && self.child.try_wait()?.is_none()
             {
                 return Err(error.into());
             }
             self.child.wait()?;
-            self.retired = true;
+            self.state = HelperState::Retired;
         }
         Ok(())
     }
 
     pub fn download(&mut self, canceled: &AtomicBool) -> Result<()> {
         ensure!(
-            !self.retired,
+            self.state == HelperState::Ready,
             "Download helper stopped; reopen Nemo to retry"
         );
         ensure!(!canceled.load(Ordering::Acquire), "Canceled");
         match self.request(canceled) {
-            Ok(Some(error)) => bail!("{error}"),
+            Ok(Some(error)) => {
+                self.state = HelperState::Ready;
+                bail!("{error}")
+            }
             Ok(None) => {
                 self.retire()?;
                 ensure!(!canceled.load(Ordering::Acquire), "Canceled");
@@ -119,12 +133,11 @@ impl Downloader {
     fn request(&mut self, canceled: &AtomicBool) -> Result<Option<String>> {
         self.input.write_all(b"download\n")?;
         let mut response = Vec::new();
-        let mut interrupted = false;
-        let mut started = false;
+        self.state = HelperState::AwaitingStart;
         loop {
-            if started && canceled.load(Ordering::Acquire) && !interrupted {
+            if self.state == HelperState::Downloading && canceled.load(Ordering::Acquire) {
                 unsafe { libc::kill(self.child.id() as i32, libc::SIGINT) };
-                interrupted = true;
+                self.state = HelperState::CancelRequested;
             }
             let mut buffer = [0; 1024];
             match self.output.read(&mut buffer) {
@@ -137,9 +150,9 @@ impl Downloader {
                 response.len() <= 64 * 1024,
                 "Invalid download helper response"
             );
-            if !started && response.starts_with(b"started\n") {
+            if self.state == HelperState::AwaitingStart && response.starts_with(b"started\n") {
                 response.drain(..8);
-                started = true;
+                self.state = HelperState::Downloading;
             }
             if response.ends_with(b"\n") {
                 return Ok(serde_json::from_slice(&response)?);
@@ -262,6 +275,35 @@ mod tests {
         downloader.download(&canceled).unwrap();
         assert!(downloader.retired());
         assert!(downloader.child.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn cancellation_waits_for_start_acknowledgement() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut downloader = peer(
+            "trap 'touch \"$1/interrupted\"' INT; printf 'ready\\n'; read -r request; touch \"$1/awaiting\"; attempts=0; while ! test -e \"$1/acknowledge\"; do attempts=$((attempts + 1)); test \"$attempts\" -lt 500 || exit 1; sleep 0.01; done; printf 'started\\n'; attempts=0; while ! test -e \"$1/interrupted\"; do attempts=$((attempts + 1)); test \"$attempts\" -lt 500 || exit 1; sleep 0.01; done; printf '\"Canceled\"\\n'; read -r request",
+            directory.path(),
+        );
+        let canceled = AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !directory.path().join("awaiting").exists() {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(5));
+                }
+                canceled.store(true, Ordering::Release);
+                thread::sleep(Duration::from_millis(150));
+                assert!(!directory.path().join("interrupted").exists());
+                std::fs::write(directory.path().join("acknowledge"), b"").unwrap();
+            });
+            assert_eq!(
+                downloader.download(&canceled).unwrap_err().to_string(),
+                "Canceled"
+            );
+        });
+        assert!(directory.path().join("interrupted").exists());
+        assert_eq!(downloader.state, HelperState::Ready);
     }
 
     #[test]

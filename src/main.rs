@@ -173,13 +173,36 @@ enum Outcome {
     Transcript(String, Instant),
     Delivered,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkKind {
     Warm,
     Download,
+    FinalizeAudio,
     Transcribe,
+    Deliver,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Completion {
+    Microphone,
+    Audio,
+    Worker,
+}
+
+enum CancelAction {
+    None,
+    DiscardRecording,
+    WaitMicrophone,
+    WaitWorker,
+}
+
 enum State {
     Idle,
+    Canceling {
+        id: u64,
+        canceled: Arc<AtomicBool>,
+        awaiting: Completion,
+    },
     Starting {
         id: u64,
         canceled: Arc<AtomicBool>,
@@ -197,22 +220,108 @@ enum State {
 }
 
 impl State {
+    fn request_cancel(&mut self) -> CancelAction {
+        let (id, canceled, awaiting, action) = match self {
+            Self::Idle | Self::Canceling { .. } => return CancelAction::None,
+            Self::Recording { canceled, .. } => {
+                canceled.store(true, Ordering::Release);
+                *self = Self::Idle;
+                return CancelAction::DiscardRecording;
+            }
+            Self::Starting { id, canceled } => (
+                *id,
+                canceled.clone(),
+                Completion::Microphone,
+                CancelAction::WaitMicrophone,
+            ),
+            Self::Working { id, canceled, kind } => (
+                *id,
+                canceled.clone(),
+                if *kind == WorkKind::FinalizeAudio {
+                    Completion::Audio
+                } else {
+                    Completion::Worker
+                },
+                CancelAction::WaitWorker,
+            ),
+        };
+        canceled.store(true, Ordering::Release);
+        *self = Self::Canceling {
+            id,
+            canceled,
+            awaiting,
+        };
+        action
+    }
+
+    fn audio_finalized(&mut self, id: u64) -> Option<Arc<AtomicBool>> {
+        let Self::Working {
+            id: current,
+            canceled,
+            kind: WorkKind::FinalizeAudio,
+        } = self
+        else {
+            return None;
+        };
+        if *current != id {
+            return None;
+        }
+        let canceled = canceled.clone();
+        *self = Self::Working {
+            id,
+            canceled: canceled.clone(),
+            kind: WorkKind::Transcribe,
+        };
+        Some(canceled)
+    }
+
+    fn accepts_result(&self, id: u64, result: &Result<Outcome>) -> bool {
+        let Self::Working {
+            id: current, kind, ..
+        } = self
+        else {
+            return false;
+        };
+        *current == id
+            && matches!(
+                (kind, result),
+                (WorkKind::Warm, Ok(Outcome::ModelLoaded))
+                    | (WorkKind::Download, Ok(Outcome::ModelDownloaded))
+                    | (WorkKind::Transcribe, Ok(Outcome::Transcript(..)))
+                    | (WorkKind::Deliver, Ok(Outcome::Delivered))
+                    | (
+                        WorkKind::Warm
+                            | WorkKind::Download
+                            | WorkKind::Transcribe
+                            | WorkKind::Deliver,
+                        Err(_)
+                    )
+            )
+    }
+
+    fn finish_cancellation(&mut self, id: u64, completion: Completion) -> bool {
+        if matches!(self, Self::Canceling { id: current, awaiting, .. } if *current == id && *awaiting == completion)
+        {
+            *self = Self::Idle;
+            true
+        } else {
+            false
+        }
+    }
+
     fn activity(&self) -> readiness::Activity {
         use readiness::Activity;
         match self {
             Self::Idle => Activity::Idle,
             Self::Recording { .. } => Activity::Recording,
-            Self::Starting { canceled, .. } if canceled.load(Ordering::Acquire) => {
-                Activity::Canceling
-            }
+            Self::Canceling { .. } => Activity::Canceling,
             Self::Starting { .. } => Activity::OpeningMicrophone,
-            Self::Working { canceled, .. } if canceled.load(Ordering::Acquire) => {
-                Activity::Canceling
-            }
             Self::Working { kind, .. } => match kind {
                 WorkKind::Warm => Activity::LoadingModel,
                 WorkKind::Download => Activity::DownloadingModel,
-                WorkKind::Transcribe => Activity::Transcribing,
+                WorkKind::FinalizeAudio | WorkKind::Transcribe | WorkKind::Deliver => {
+                    Activity::Transcribing
+                }
             },
         }
     }
@@ -221,11 +330,12 @@ impl State {
         match self {
             Self::Recording { .. } => indicator::Phase::Recording,
             Self::Working {
-                kind: WorkKind::Transcribe,
-                canceled,
+                kind: WorkKind::FinalizeAudio | WorkKind::Transcribe | WorkKind::Deliver,
                 ..
-            } if !canceled.load(Ordering::Acquire) => indicator::Phase::Transcribing,
-            Self::Idle | Self::Starting { .. } | Self::Working { .. } => indicator::Phase::Hidden,
+            } => indicator::Phase::Transcribing,
+            Self::Idle | Self::Starting { .. } | Self::Working { .. } | Self::Canceling { .. } => {
+                indicator::Phase::Hidden
+            }
         }
     }
 }
@@ -713,7 +823,7 @@ fn run(mut config: Config) -> Result<()> {
         });
         toggle_item.set_enabled(!matches!(
             state,
-            State::Working { .. } | State::Starting { .. }
+            State::Working { .. } | State::Starting { .. } | State::Canceling { .. }
         ));
         cancel_item.set_enabled(!matches!(state, State::Idle));
         warm_item.set_enabled(matches!(state, State::Idle));
@@ -972,6 +1082,9 @@ fn run(mut config: Config) -> Result<()> {
             }
             TaoEvent::UserEvent(Event::Action(action)) => Some(action),
             TaoEvent::UserEvent(Event::RecordingStarted(id, result)) => {
+                if state.finish_cancellation(id, Completion::Microphone) {
+                    set_status("Canceled");
+                }
                 if let State::Starting {
                     id: current,
                     canceled,
@@ -979,12 +1092,8 @@ fn run(mut config: Config) -> Result<()> {
                     && *current == id
                 {
                     let canceled = canceled.clone();
-                    let was_canceled = canceled.load(Ordering::Acquire);
                     state = State::Idle;
-                    if was_canceled {
-                        set_status("Canceled");
-                    } else {
-                        match result {
+                    match result {
                             Ok(audio::Start::Recording(audio)) => {
                                 let canceled = canceled.clone();
                                 state = State::Recording {
@@ -1017,7 +1126,6 @@ fn run(mut config: Config) -> Result<()> {
                                 set_status(&format!("{error:#}"));
                                 output::sound("Basso");
                             }
-                        }
                     }
                 }
                 None
@@ -1031,16 +1139,16 @@ fn run(mut config: Config) -> Result<()> {
                 _ => None,
             },
             TaoEvent::UserEvent(Event::RecordingFinished(id, result, stopped)) => {
-                if let State::Working { id: current, canceled, .. } = &state
+                if state.finish_cancellation(id, Completion::Audio) {
+                    set_status("Canceled");
+                }
+                if let State::Working { id: current, canceled, kind: WorkKind::FinalizeAudio } = &state
                     && *current == id
                 {
-                    if canceled.load(Ordering::Acquire) {
-                        state = State::Idle;
-                        set_status("Canceled");
-                    } else {
-                        match result {
+                    match result {
                             Ok(wav) => {
-                                let _ = jobs.send(Job::Transcribe(id, wav, canceled.clone(), stopped));
+                                let canceled = state.audio_finalized(id).unwrap();
+                                let _ = jobs.send(Job::Transcribe(id, wav, canceled, stopped));
                                 sounds.play(config.sound_pack, sounds::Cue::Stop);
                             }
                             Err(error) => {
@@ -1050,22 +1158,22 @@ fn run(mut config: Config) -> Result<()> {
                                 set_status(&format!("{error:#}"));
                                 output::sound("Basso");
                             }
-                        }
                     }
                 }
                 None
             }
             TaoEvent::UserEvent(Event::Finished(id, result)) => {
-                if let State::Working { id: current, canceled, .. } = &state
+                if state.finish_cancellation(id, Completion::Worker) {
+                    set_status("Canceled");
+                }
+                if let State::Working { id: current, canceled, kind: WorkKind::Warm | WorkKind::Download | WorkKind::Transcribe | WorkKind::Deliver } = &state
                     && *current == id
+                    && state.accepts_result(id, &result)
                 {
                     let canceled = canceled.clone();
-                    if canceled.load(Ordering::Acquire) {
-                        state = State::Idle;
-                        set_status("Canceled");
-                    } else {
-                        match result {
+                    match result {
                             Ok(Outcome::Transcript(text, stopped)) => {
+                                state = State::Working { id, canceled: canceled.clone(), kind: WorkKind::Deliver };
                                 let proxy = recording_proxy.clone();
                                 let paste = config.paste;
                                 let remove_period = config.remove_trailing_period;
@@ -1099,7 +1207,6 @@ fn run(mut config: Config) -> Result<()> {
                                     Ok(Outcome::Transcript(..)) => unreachable!(),
                                 }
                             }
-                        }
                     }
                 }
                 None
@@ -1134,6 +1241,7 @@ fn run(mut config: Config) -> Result<()> {
             "quit" => {
                 if let State::Working { canceled, .. }
                 | State::Starting { canceled, .. }
+                | State::Canceling { canceled, .. }
                 | State::Recording { canceled, .. } = &state
                 {
                     canceled.store(true, Ordering::Release);
@@ -1163,23 +1271,17 @@ fn run(mut config: Config) -> Result<()> {
                     .arg(readiness::MICROPHONE_URL)
                     .spawn();
             }
-            "cancel" => match &state {
-                State::Working { canceled, .. } => {
-                    canceled.store(true, Ordering::Release);
+            "cancel" => match state.request_cancel() {
+                CancelAction::WaitWorker => {
                     process.stop();
                     set_status("Canceling");
                 }
-                State::Recording { canceled, .. } => {
-                    canceled.store(true, Ordering::Release);
-                    state = State::Idle;
+                CancelAction::DiscardRecording => {
                     output::sound("Pop");
                     set_status("Canceled");
                 }
-                State::Starting { canceled, .. } => {
-                    canceled.store(true, Ordering::Release);
-                    set_status("Canceling microphone request");
-                }
-                State::Idle => {}
+                CancelAction::WaitMicrophone => set_status("Canceling microphone request"),
+                CancelAction::None => {}
             },
             "warm" if matches!(state, State::Idle) => {
                 next_id += 1;
@@ -1215,7 +1317,7 @@ fn run(mut config: Config) -> Result<()> {
                     return;
                 }
                 last_toggle = Instant::now();
-                if matches!(state, State::Working { .. } | State::Starting { .. }) {
+                if matches!(state, State::Working { .. } | State::Starting { .. } | State::Canceling { .. }) {
                     return;
                 }
                 match std::mem::replace(&mut state, State::Idle) {
@@ -1255,11 +1357,11 @@ fn run(mut config: Config) -> Result<()> {
                         state = State::Working {
                             id,
                             canceled,
-                            kind: WorkKind::Transcribe,
+                            kind: WorkKind::FinalizeAudio,
                         };
                         set_status("Transcribing");
                     }
-                    State::Working { .. } | State::Starting { .. } => unreachable!(),
+                    State::Working { .. } | State::Starting { .. } | State::Canceling { .. } => unreachable!(),
                 }
             }
             _ => {}
@@ -1303,6 +1405,94 @@ mod indicator_tests {
     use indicator::Phase;
 
     #[test]
+    fn finalization_accepts_only_the_current_audio_once() {
+        let signal = Arc::new(AtomicBool::new(false));
+        let mut state = State::Working {
+            id: 7,
+            canceled: signal.clone(),
+            kind: WorkKind::FinalizeAudio,
+        };
+        assert!(state.audio_finalized(6).is_none());
+        assert!(matches!(
+            state,
+            State::Working {
+                kind: WorkKind::FinalizeAudio,
+                ..
+            }
+        ));
+        assert!(Arc::ptr_eq(&state.audio_finalized(7).unwrap(), &signal));
+        assert!(matches!(
+            state,
+            State::Working {
+                kind: WorkKind::Transcribe,
+                ..
+            }
+        ));
+        assert!(state.audio_finalized(7).is_none());
+        state.request_cancel();
+        assert_eq!(state.activity(), readiness::Activity::Canceling);
+        assert!(!state.finish_cancellation(7, Completion::Audio));
+        assert!(state.finish_cancellation(7, Completion::Worker));
+        assert_eq!(state.activity(), readiness::Activity::Idle);
+    }
+
+    #[test]
+    fn worker_results_must_match_the_current_phase_and_attempt() {
+        let mut state = State::Working {
+            id: 4,
+            canceled: Arc::new(AtomicBool::new(false)),
+            kind: WorkKind::FinalizeAudio,
+        };
+        let transcript = Ok(Outcome::Transcript("hello".into(), Instant::now()));
+        assert!(!state.accepts_result(4, &transcript));
+        state.audio_finalized(4).unwrap();
+        assert!(!state.accepts_result(3, &transcript));
+        assert!(state.accepts_result(4, &transcript));
+        assert!(!state.accepts_result(4, &Ok(Outcome::Delivered)));
+        if let State::Working { kind, .. } = &mut state {
+            *kind = WorkKind::Deliver;
+        }
+        assert!(!state.accepts_result(4, &transcript));
+        assert!(state.accepts_result(4, &Ok(Outcome::Delivered)));
+        state.request_cancel();
+        assert!(!state.accepts_result(4, &Ok(Outcome::Delivered)));
+    }
+
+    #[test]
+    fn cancellation_waits_for_its_own_operation_and_ignores_duplicates() {
+        for (initial, completion) in [
+            (None, Completion::Microphone),
+            (Some(WorkKind::FinalizeAudio), Completion::Audio),
+            (Some(WorkKind::Transcribe), Completion::Worker),
+            (Some(WorkKind::Deliver), Completion::Worker),
+            (Some(WorkKind::Warm), Completion::Worker),
+            (Some(WorkKind::Download), Completion::Worker),
+        ] {
+            let canceled = Arc::new(AtomicBool::new(false));
+            let mut state = match initial {
+                None => State::Starting {
+                    id: 9,
+                    canceled: canceled.clone(),
+                },
+                Some(kind) => State::Working {
+                    id: 9,
+                    canceled: canceled.clone(),
+                    kind,
+                },
+            };
+            state.request_cancel();
+            assert!(canceled.load(Ordering::Acquire));
+            assert!(matches!(state.request_cancel(), CancelAction::None));
+            assert!(!state.finish_cancellation(8, completion));
+            assert_eq!(state.activity(), readiness::Activity::Canceling);
+            assert!(state.audio_finalized(9).is_none());
+            assert!(state.finish_cancellation(9, completion));
+            assert!(!state.finish_cancellation(9, completion));
+            assert!(matches!(state, State::Idle));
+        }
+    }
+
+    #[test]
     fn only_transcription_shows_a_processing_indicator() {
         let state = |kind| State::Working {
             id: 1,
@@ -1320,13 +1510,14 @@ mod indicator_tests {
     #[test]
     fn canceling_transcription_hides_the_indicator_before_the_worker_finishes() {
         let canceled = Arc::new(AtomicBool::new(false));
-        let state = State::Working {
+        let mut state = State::Working {
             id: 1,
             canceled: canceled.clone(),
             kind: WorkKind::Transcribe,
         };
         assert_eq!(state.indicator_phase(), Phase::Transcribing);
-        canceled.store(true, Ordering::Release);
+        state.request_cancel();
+        assert!(canceled.load(Ordering::Acquire));
         assert_eq!(state.indicator_phase(), Phase::Hidden);
         assert_eq!(State::Idle.indicator_phase(), Phase::Hidden);
     }
@@ -1334,12 +1525,13 @@ mod indicator_tests {
     #[test]
     fn microphone_setup_does_not_claim_to_be_recording() {
         let canceled = Arc::new(AtomicBool::new(false));
-        let state = State::Starting {
+        let mut state = State::Starting {
             id: 1,
             canceled: canceled.clone(),
         };
         assert_eq!(state.indicator_phase(), Phase::Hidden);
-        canceled.store(true, Ordering::Release);
+        state.request_cancel();
+        assert!(canceled.load(Ordering::Acquire));
         assert_eq!(state.indicator_phase(), Phase::Hidden);
     }
 }

@@ -141,37 +141,37 @@ const LEFT_OPTION_FLAG: u64 = 0x20;
 const OTHER_MODIFIERS: u64 = LEFT_OPTION_FLAG | (1 << 17) | (1 << 18) | (1 << 20) | (1 << 23);
 
 #[derive(Default)]
-struct RightOptionTap {
-    down: bool,
-    solo: bool,
+enum RightOptionTap {
+    #[default]
+    Released,
+    PressedAlone,
+    PressedInChord,
 }
 
 impl RightOptionTap {
     fn flags_changed(&mut self, keycode: u16, flags: u64) -> bool {
         if keycode != RIGHT_OPTION_KEYCODE {
-            self.solo = false;
+            self.chord_used();
             return false;
         }
         let other = flags & OTHER_MODIFIERS != 0;
         if flags & RIGHT_OPTION_FLAG != 0 {
-            if !self.down {
-                self.solo = !other;
-            }
-            self.down = true;
-            if other {
-                self.solo = false;
-            }
+            *self = match (&*self, other) {
+                (_, true) | (Self::PressedInChord, false) => Self::PressedInChord,
+                (Self::Released | Self::PressedAlone, false) => Self::PressedAlone,
+            };
             false
         } else {
-            let toggle = self.down && self.solo && !other;
-            self.down = false;
-            self.solo = false;
+            let toggle = matches!(self, Self::PressedAlone) && !other;
+            *self = Self::Released;
             toggle
         }
     }
 
     fn chord_used(&mut self) {
-        self.solo = false;
+        if !matches!(self, Self::Released) {
+            *self = Self::PressedInChord;
+        }
     }
 }
 
@@ -196,6 +196,15 @@ mod tests {
         assert!(!tap.flags_changed(61, RIGHT_DOWN));
         assert!(tap.flags_changed(61, 0));
         assert!(!tap.flags_changed(61, 0));
+        assert!(!tap.flags_changed(61, RIGHT_DOWN));
+        assert!(tap.flags_changed(61, 0));
+    }
+
+    #[test]
+    fn unrelated_activity_while_released_does_not_poison_the_next_tap() {
+        let mut tap = RightOptionTap::default();
+        tap.chord_used();
+        assert!(!tap.flags_changed(58, 0));
         assert!(!tap.flags_changed(61, RIGHT_DOWN));
         assert!(tap.flags_changed(61, 0));
     }

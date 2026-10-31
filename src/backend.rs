@@ -6,7 +6,7 @@ use std::{
     fs::{self, File},
     io::Read,
     net::TcpListener,
-    process::{Child, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -16,9 +16,44 @@ use std::{
 };
 
 #[derive(Default)]
-struct ProcessState {
-    child: Option<Child>,
-    shutdown: bool,
+enum ProcessState {
+    #[default]
+    Unloaded,
+    Starting(Child),
+    Ready {
+        child: Child,
+        base: String,
+    },
+    Shutdown,
+}
+
+impl ProcessState {
+    fn running(&mut self) -> Result<bool> {
+        let child = match self {
+            Self::Starting(child) | Self::Ready { child, .. } => child,
+            Self::Unloaded | Self::Shutdown => return Ok(false),
+        };
+        if child.try_wait()?.is_none() {
+            return Ok(true);
+        }
+        *self = Self::Unloaded;
+        Ok(false)
+    }
+
+    fn retire(&mut self, shutdown: bool) -> bool {
+        let next = if shutdown || matches!(self, Self::Shutdown) {
+            Self::Shutdown
+        } else {
+            Self::Unloaded
+        };
+        let previous = std::mem::replace(self, next);
+        let loaded = matches!(previous, Self::Ready { .. });
+        if let Self::Starting(mut child) | Self::Ready { mut child, .. } = previous {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        loaded
+    }
 }
 
 #[derive(Clone, Default)]
@@ -26,33 +61,59 @@ pub struct Process(Arc<Mutex<ProcessState>>);
 
 impl Process {
     pub fn stop(&self) {
-        if let Some(mut child) = self.0.lock().unwrap().child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.0.lock().unwrap().retire(false);
     }
 
     pub fn shutdown(&self) {
-        self.0.lock().unwrap().shutdown = true;
-        self.stop();
+        self.0.lock().unwrap().retire(true);
+    }
+
+    fn start(&self, command: &mut Command, canceled: &AtomicBool) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        ensure!(
+            matches!(*state, ProcessState::Unloaded) && !canceled.load(Ordering::Acquire),
+            "Canceled"
+        );
+        let child = command.spawn().context("Cannot start inference runtime")?;
+        *state = ProcessState::Starting(child);
+        Ok(())
     }
 
     fn running(&self) -> Result<bool> {
-        let mut slot = self.0.lock().unwrap();
-        if let Some(child) = slot.child.as_mut() {
-            if child.try_wait()?.is_none() {
-                return Ok(true);
-            }
-            slot.child = None;
+        self.0.lock().unwrap().running()
+    }
+
+    fn mark_ready(&self, base: String, canceled: &AtomicBool) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        ensure!(
+            !canceled.load(Ordering::Acquire) && state.running()?,
+            "Canceled"
+        );
+        ensure!(
+            matches!(*state, ProcessState::Starting(_)),
+            "Inference runtime is not starting"
+        );
+        let ProcessState::Starting(child) = std::mem::take(&mut *state) else {
+            unreachable!();
+        };
+        *state = ProcessState::Ready { child, base };
+        Ok(())
+    }
+
+    fn endpoint(&self) -> Result<Option<String>> {
+        let mut state = self.0.lock().unwrap();
+        if state.running()?
+            && let ProcessState::Ready { base, .. } = &*state
+        {
+            return Ok(Some(base.clone()));
         }
-        Ok(false)
+        Ok(None)
     }
 }
 
 pub struct Backend {
     config: Config,
     pub process: Process,
-    base: Option<String>,
     key: String,
     client: Client,
 }
@@ -65,7 +126,6 @@ impl Backend {
         Ok(Self {
             config,
             process,
-            base: None,
             key,
             client: Client::builder()
                 .no_proxy()
@@ -76,17 +136,16 @@ impl Backend {
     }
 
     pub fn loaded(&self) -> bool {
-        self.base.is_some()
+        self.process.endpoint().ok().flatten().is_some()
     }
 
     pub fn unload(&mut self) -> bool {
-        self.process.stop();
-        self.base.take().is_some()
+        self.process.0.lock().unwrap().retire(false)
     }
 
     pub fn ready(&mut self, canceled: &AtomicBool) -> Result<bool> {
         ensure!(!canceled.load(Ordering::Acquire), "Canceled");
-        if self.base.is_some() && self.process.running()? {
+        if self.process.endpoint()?.is_some() {
             return Ok(true);
         }
         let started = Instant::now();
@@ -152,21 +211,11 @@ impl Backend {
         if !self.config.model_warmup {
             command.arg("--no-warmup");
         }
-        let mut child = command
+        command
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
-            .stderr(log)
-            .spawn()
-            .context("Cannot start inference runtime")?;
-        {
-            let mut slot = self.process.0.lock().unwrap();
-            if slot.shutdown || canceled.load(Ordering::Acquire) {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!("Canceled");
-            }
-            slot.child = Some(child);
-        }
+            .stderr(log);
+        self.process.start(&mut command, canceled)?;
         let base = format!("http://127.0.0.1:{port}");
         let start = Instant::now();
         loop {
@@ -186,7 +235,7 @@ impl Backend {
                 .send()
                 && response.status().is_success()
             {
-                self.base = Some(base);
+                self.process.mark_ready(base, canceled)?;
                 return Ok(());
             }
             if start.elapsed() > Duration::from_secs(120) {
@@ -236,7 +285,9 @@ impl Backend {
                 .client
                 .post(format!(
                     "{}/v1/audio/transcriptions",
-                    self.base.as_ref().unwrap()
+                    self.process
+                        .endpoint()?
+                        .context("Inference runtime is not ready")?
                 ))
                 .bearer_auth(&self.key)
                 .multipart(form)
@@ -291,18 +342,104 @@ impl Drop for Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
     #[test]
     fn stop_reaps_the_owned_child_and_is_repeatable() {
         let process = Process::default();
-        let child = Command::new("/bin/sleep").arg("60").spawn().unwrap();
-        let pid = child.id();
-        process.0.lock().unwrap().child = Some(child);
+        process
+            .start(
+                Command::new("/bin/sleep").arg("60"),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let pid = match &*process.0.lock().unwrap() {
+            ProcessState::Starting(child) => child.id(),
+            _ => unreachable!(),
+        };
         assert!(process.running().unwrap());
         process.stop();
         process.stop();
         assert!(!process.running().unwrap());
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+    }
+
+    #[test]
+    fn stopped_runtime_can_restart_but_shutdown_is_terminal() {
+        let process = Process::default();
+        let canceled = AtomicBool::new(false);
+        process
+            .start(Command::new("/bin/sleep").arg("60"), &canceled)
+            .unwrap();
+        assert!(process.endpoint().unwrap().is_none());
+        process
+            .mark_ready("http://127.0.0.1:1".into(), &canceled)
+            .unwrap();
+        assert_eq!(
+            process.endpoint().unwrap().as_deref(),
+            Some("http://127.0.0.1:1")
+        );
+        process.stop();
+        assert!(process.endpoint().unwrap().is_none());
+        process
+            .start(Command::new("/bin/sleep").arg("60"), &canceled)
+            .unwrap();
+        process.shutdown();
+        process.stop();
+        assert!(
+            process
+                .start(Command::new("/bin/sleep").arg("60"), &canceled)
+                .is_err()
+        );
+        assert!(!process.running().unwrap());
+        assert!(matches!(*process.0.lock().unwrap(), ProcessState::Shutdown));
+    }
+
+    #[test]
+    fn cancellation_prevents_start_and_readiness_publication() {
+        let process = Process::default();
+        let canceled = AtomicBool::new(true);
+        assert!(
+            process
+                .start(Command::new("/bin/sleep").arg("60"), &canceled)
+                .is_err()
+        );
+        canceled.store(false, Ordering::Release);
+        process
+            .start(Command::new("/bin/sleep").arg("60"), &canceled)
+            .unwrap();
+        canceled.store(true, Ordering::Release);
+        assert!(
+            process
+                .mark_ready("http://127.0.0.1:1".into(), &canceled)
+                .is_err()
+        );
+        assert!(process.endpoint().unwrap().is_none());
+        process.stop();
+    }
+
+    #[test]
+    fn exited_ready_runtime_loses_its_endpoint_and_can_restart() {
+        let process = Process::default();
+        let canceled = AtomicBool::new(false);
+        process
+            .start(Command::new("/bin/sleep").arg("60"), &canceled)
+            .unwrap();
+        process
+            .mark_ready("http://127.0.0.1:1".into(), &canceled)
+            .unwrap();
+        {
+            let mut state = process.0.lock().unwrap();
+            let ProcessState::Ready { child, .. } = &mut *state else {
+                unreachable!()
+            };
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        assert!(process.endpoint().unwrap().is_none());
+        process
+            .start(Command::new("/bin/sleep").arg("60"), &canceled)
+            .unwrap();
+        assert!(process.running().unwrap());
+        process.stop();
     }
 
     #[test]
