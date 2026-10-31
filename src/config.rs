@@ -2,6 +2,29 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 
+/// The engine that runs transcription. Nemo speaks the local HTTP contract that
+/// `Backend` and the benchmark harness both drive; any other engine has to speak
+/// the same contract to be selectable here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Backend {
+    /// The bundled `nemo-speech` runtime. The default and the only shipped engine.
+    #[default]
+    NemoSpeech,
+    /// An out-of-tree engine helper (for example an MLX-Audio script) sitting beside
+    /// the bundled runtime. Experimental: it needs its own weights and toolchain.
+    MlxAudio,
+}
+
+impl Backend {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NemoSpeech => "nemo-speech",
+            Self::MlxAudio => "mlx-audio",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -10,6 +33,10 @@ pub struct Config {
     pub hotkey: crate::shortcut::Shortcut,
     pub model: PathBuf,
     pub runtime: PathBuf,
+    #[serde(skip_serializing_if = "is_default")]
+    pub backend: Backend,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mlx_runtime: Option<PathBuf>,
     pub idle_unload_seconds: u64,
     #[serde(skip_serializing_if = "is_default")]
     pub preload_model: bool,
@@ -42,6 +69,8 @@ impl Default for Config {
             hotkey: crate::shortcut::Shortcut::RightOption,
             model: crate::model::Store::managed().decoder(),
             runtime: default_runtime(),
+            backend: Backend::default(),
+            mlx_runtime: None,
             idle_unload_seconds: 60,
             preload_model: false,
             model_warmup: false,
@@ -129,6 +158,9 @@ impl Config {
             (1..=16).contains(&self.encoder_batch_size),
             "encoder_batch_size must be 1–16"
         );
+        if let Some(path) = &self.mlx_runtime {
+            ensure!(path.is_absolute(), "mlx_runtime must be an absolute path");
+        }
         Ok(())
     }
 
@@ -150,10 +182,26 @@ impl Config {
         crate::storage::atomic_write(&path(), toml::to_string_pretty(self)?.as_bytes())
     }
 
+    /// The engine executable the configured backend runs. An alternative backend
+    /// defaults to a helper sitting beside the bundled runtime, so one install can
+    /// carry both without a second configuration key.
+    pub fn runtime_path(&self) -> PathBuf {
+        match self.backend {
+            Backend::NemoSpeech => self.runtime.clone(),
+            Backend::MlxAudio => self.mlx_runtime.clone().unwrap_or_else(|| {
+                self.runtime
+                    .parent()
+                    .map(|directory| directory.join("mlx-serve.py"))
+                    .unwrap_or_else(|| PathBuf::from("mlx-serve.py"))
+            }),
+        }
+    }
+
     pub fn check_assets(&self) -> Result<()> {
         ensure!(
-            self.runtime.is_file(),
-            "Inference runtime missing. Reinstall Nemo or set the runtime path in configuration"
+            self.runtime_path().is_file(),
+            "Inference runtime missing for backend '{}'. Reinstall Nemo or set the runtime path in configuration",
+            self.backend.label()
         );
         self.check_model_assets()
     }
@@ -278,5 +326,65 @@ mod tests {
             );
         }
         assert!(toml::from_str::<Config>("inference_threads = -1").is_err());
+    }
+
+    fn sample_runtime() -> std::path::PathBuf {
+        std::path::PathBuf::from("/Applications/Nemo.app/Contents/Resources/runtime/nemo-speech")
+    }
+
+    #[test]
+    fn the_default_backend_is_the_bundled_runtime() {
+        let config = Config::default();
+        assert_eq!(config.backend, Backend::NemoSpeech);
+        assert_eq!(config.runtime_path(), config.runtime);
+    }
+
+    #[test]
+    fn the_default_configuration_omits_the_backend_key() {
+        let toml = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(
+            !toml.contains("backend"),
+            "default config must not pin a backend: {toml}"
+        );
+        assert!(!toml.contains("mlx_runtime"));
+    }
+
+    #[test]
+    fn an_alternative_backend_defaults_beside_the_bundled_runtime() {
+        let toml = format!(
+            "runtime = {:?}\nbackend = \"mlx-audio\"\n",
+            sample_runtime().display().to_string()
+        );
+        let config: Config = toml::from_str(&toml).unwrap();
+        assert_eq!(config.backend, Backend::MlxAudio);
+        assert_eq!(
+            config.runtime_path(),
+            std::path::PathBuf::from(
+                "/Applications/Nemo.app/Contents/Resources/runtime/mlx-serve.py"
+            )
+        );
+    }
+
+    #[test]
+    fn an_explicit_helper_path_wins_and_must_be_absolute() {
+        let toml = "runtime = \"/opt/nemo/nemo-speech\"\nbackend = \"mlx-audio\"\nmlx_runtime = \"/opt/nemo/helper.py\"\n";
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.runtime_path(),
+            std::path::PathBuf::from("/opt/nemo/helper.py")
+        );
+
+        let relative = "runtime = \"/opt/nemo/nemo-speech\"\nbackend = \"mlx-audio\"\nmlx_runtime = \"helper.py\"\n";
+        let config: Config = toml::from_str(relative).unwrap();
+        assert!(
+            config.validate().is_err(),
+            "relative helper path must be rejected"
+        );
+    }
+
+    #[test]
+    fn an_unknown_backend_is_rejected_rather_than_silently_ignored() {
+        let toml = "backend = \"whisper-cpp\"\n";
+        assert!(toml::from_str::<Config>(toml).is_err());
     }
 }
