@@ -13,6 +13,8 @@ evidence and inference comparisons below describe the October 28 build.
 
 Nemo starts loading the model in the background when microphone capture begins, so recording and loading overlap. It then keeps the model for five idle minutes on this laptop. This uses about 20 GB of resident memory; the model and transcription quality stay unchanged.
 
+Setting it up by hand is [documented here](mlx-audio-setup.md).
+
 An [MLX-Audio experiment](mlx-audio-experiment.md) measured **1.58-1.70x** faster
 wall clock through the app's own runtime contract from MTP speculative decoding,
 with unchanged word error rates. It is a measurement of another engine, not a
