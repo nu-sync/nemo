@@ -1,0 +1,32 @@
+{
+  "src/main.rs": {
+    "sha256": "8b5719febbfcc6c638eb1024937a103d01977148830a3ac9dafd0b5661aed515",
+    "symbols": "run; Job::Download; recording worker",
+    "mapping": "ChooseStartup, LockSuccess/Failure, BeginDownload, DropDownloadHelper, ReapDownloadHelper, Record"
+  },
+  "src/download.rs": {
+    "sha256": "3844e833f246f79c4ac7994dcbbb00298814040324593b64ff0a22e1932f4d39",
+    "symbols": "Downloader::spawn/download/drop; worker",
+    "mapping": "HelperReady, CancelPublishedResult, DropDownloadHelper, ReapDownloadHelper, ParentWatchdog, HelperKilled; fixed pipe has no audio parameter"
+  },
+  "src/backend.rs": {
+    "sha256": "b36c54cb783dbb8dfc92787a976cd86134d1238fe6923fc28b94ad702cae076b",
+    "symbols": "Process::stop; Backend::load/transcribe",
+    "mapping": "Infer, InferenceExits; native child ownership only"
+  },
+  "src/network.rs": {
+    "sha256": "508bf22221290fd51d36a4a1eeffd88cec67591722c44eba2f87705d3b42df01",
+    "symbols": "local_only, apply, download_only, inference_command",
+    "mapping": "LockSuccess/Failure, HelperReadsAudio, Infer; helper process-exec denied; OS enforcement assumed"
+  },
+  "scripts/local-only.sb": {
+    "sha256": "512e7ebd7073697166eb7adc1b9820515ff59a3d91a3500318998c428cfec52e",
+    "symbols": "embedded sandbox profile",
+    "mapping": "confined means no direct external IP connections; loopback/Unix sockets excluded"
+  },
+  "src/model.rs": {
+    "sha256": "80dd585a2f58862ab9ca3bbb6d4c6a3567c31698d5ca91a4659861f134e7ad6b",
+    "symbols": "Store::ready/download; publish/verify_file",
+    "mapping": "StartTransfer, TransferCompletes, CancelCompletes, VerifySuccess/Failure; HTTP activity belongs to helper; cached presence/size differs from hash verification"
+  }
+}

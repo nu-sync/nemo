@@ -1,0 +1,43 @@
+---
+title: "Nemo local-only lifecycle"
+---
+stateDiagram-v2
+  s0: Start
+  s1: Stopped
+  s2: Start download helper
+  s3: Apply local-only policy
+  s4: Controller stopped#59; cleanup pending
+  s5: Offline ready
+  s6: Model needed
+  s7: Handle audio locally
+  s8: Download model in helper
+  s9: Helper stopped#59; reopen to retry
+  s10: Verify model
+  s11: Model published#59; retire helper
+  s12: Late cancellation#59; retirement required
+  s13: Wait for helper exit
+  [*] --> s0
+  s0 --> s2: prepare model acquisition
+  s0 --> s3: use cached model
+  s2 --> s3: helper confined#59; subprocess execution denied
+  s3 --> s1: confinement fails
+  s3 --> s5: confinement succeeds
+  s4 --> s1: helper dies#59; transfer ends with it or watchdog terminates helper
+  s5 --> s7: start audio handling
+  s3 --> s4: confinement fails
+  s3 --> s6: confinement succeeds
+  s6 --> s8: request pinned model
+  s7 --> s5: finish audio handling
+  s8 --> s4: controller exits
+  s8 --> s9: helper dies#59; transfer ends with it
+  s9 --> s1: controller exits
+  s8 --> s6: transfer canceled#59; retry available
+  s8 --> s10: transfer completes
+  s10 --> s6: verification fails
+  s10 --> s11: verify hashes and publish
+  s11 --> s5: helper dies#59; transfer ends with it
+  s11 --> s12: cancel before success is accepted
+  s11 --> s13: terminate helper
+  s12 --> s5: helper dies#59; transfer ends with it
+  s12 --> s13: terminate helper
+  s13 --> s5: observe helper exit

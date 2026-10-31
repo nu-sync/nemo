@@ -109,14 +109,24 @@ fn validate_path(path: &Path) -> Result<()> {
             extension.as_str(),
             "p12" | "pfx" | "key" | "pem" | "mobileprovision"
         );
-    let licensed_cue = matches!(
+    let bundled_cue = matches!(
         path.to_str(),
-        Some("assets/sounds/handy-marimba-start.wav" | "assets/sounds/handy-marimba-stop.wav")
+        Some(
+            "assets/sounds/handy-marimba-start.wav"
+                | "assets/sounds/handy-marimba-stop.wav"
+                | "assets/sounds/handy-marimba-complete.wav"
+                | "assets/sounds/minimal-start.wav"
+                | "assets/sounds/minimal-stop.wav"
+                | "assets/sounds/minimal-complete.wav"
+                | "assets/sounds/chime-start.wav"
+                | "assets/sounds/chime-stop.wav"
+                | "assets/sounds/chime-complete.wav"
+        )
     );
     let captured = matches!(
         extension.as_str(),
         "gguf" | "part" | "aiff" | "aif" | "caf" | "mp3" | "m4a" | "wav"
-    ) && !licensed_cue;
+    ) && !bundled_cue;
     ensure!(
         !generated && !credentials && !captured,
         "Review excluded/private source path before release: {}",
@@ -147,6 +157,13 @@ mod tests {
             "docs/performance.md",
             "assets/sounds/handy-marimba-start.wav",
             "assets/sounds/handy-marimba-stop.wav",
+            "assets/sounds/handy-marimba-complete.wav",
+            "assets/sounds/minimal-start.wav",
+            "assets/sounds/minimal-stop.wav",
+            "assets/sounds/minimal-complete.wav",
+            "assets/sounds/chime-start.wav",
+            "assets/sounds/chime-stop.wav",
+            "assets/sounds/chime-complete.wav",
         ] {
             validate_path(Path::new(path)).unwrap();
         }

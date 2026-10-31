@@ -3,6 +3,43 @@ use std::{
     process::{Command, Output},
 };
 
+#[test]
+fn download_helper_rejects_urls_and_arbitrary_commands() {
+    use std::{io::Write, process::Stdio};
+    let root = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nemo"))
+        .args([
+            "download-worker",
+            "--parent-pid",
+            &std::process::id().to_string(),
+        ])
+        .env_clear()
+        .env("NEMO_DATA_DIR", root.path().join("data"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"https://example.com/private-audio\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert_eq!(output.stdout, b"ready\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid model download command"));
+    assert!(
+        !root
+            .path()
+            .join("data/models")
+            .read_dir()
+            .unwrap()
+            .any(|entry| entry.is_ok())
+    );
+}
+
 fn cli(root: &std::path::Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_nemo"))
         .args(args)

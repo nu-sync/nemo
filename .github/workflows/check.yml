@@ -20,3 +20,6 @@ jobs:
         run: |
           rustup default 1.95.0
           cargo xtask check
+      - name: Check offline process model
+        run: |
+          python3 scripts/verify-offline-model.py --fetch-tools --self-test --output artifacts/offline-model-ci

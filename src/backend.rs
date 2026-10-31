@@ -6,7 +6,7 @@ use std::{
     fs::{self, File},
     io::Read,
     net::TcpListener,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -25,37 +25,6 @@ struct ProcessState {
 pub struct Process(Arc<Mutex<ProcessState>>);
 
 impl Process {
-    pub fn run(&self, command: &mut Command, canceled: &AtomicBool) -> Result<()> {
-        let mut child = command.spawn().context("Cannot start model download")?;
-        {
-            let mut slot = self.0.lock().unwrap();
-            if slot.shutdown || canceled.load(Ordering::Acquire) {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!("Canceled");
-            }
-            slot.child = Some(child);
-        }
-        loop {
-            if canceled.load(Ordering::Acquire) {
-                self.stop();
-                bail!("Canceled");
-            }
-            let mut slot = self.0.lock().unwrap();
-            let child = slot.child.as_mut().context("Download stopped")?;
-            if let Some(status) = child.try_wait()? {
-                slot.child = None;
-                ensure!(
-                    status.success(),
-                    "Model download failed ({status}); retry to resume"
-                );
-                return Ok(());
-            }
-            drop(slot);
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
     pub fn stop(&self) {
         if let Some(mut child) = self.0.lock().unwrap().child.take() {
             let _ = child.kill();
@@ -100,6 +69,7 @@ impl Backend {
             key,
             client: Client::builder()
                 .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(300))
                 .build()?,
         })
@@ -140,7 +110,9 @@ impl Backend {
         drop(listener);
         fs::create_dir_all(config::data_dir())?;
         let log = File::create(config::data_dir().join("inference.log"))?;
-        let mut command = Command::new(&self.config.runtime);
+        use std::os::unix::fs::PermissionsExt;
+        log.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let mut command = crate::network::inference_command(&self.config.runtime);
         command
             .args(["serve", "--asr-model"])
             .arg(&self.config.model)
@@ -272,11 +244,7 @@ impl Backend {
                 .context("Transcription request failed")?;
             let status = response.status();
             let body = response.text()?;
-            ensure!(
-                status.is_success(),
-                "Transcription failed ({status}): {}",
-                body.chars().take(1000).collect::<String>()
-            );
+            ensure!(status.is_success(), "Transcription failed ({status})");
             ensure!(!canceled.load(Ordering::Acquire), "Canceled");
             #[derive(Deserialize)]
             struct Transcript {
@@ -323,6 +291,7 @@ impl Drop for Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     #[test]
     fn stop_reaps_the_owned_child_and_is_repeatable() {
         let process = Process::default();
