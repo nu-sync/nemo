@@ -210,10 +210,22 @@ impl Config {
             Backend::MlxAudio => self.mlx_runtime.clone().unwrap_or_else(|| {
                 self.runtime
                     .parent()
-                    .map(|directory| directory.join("mlx-serve.py"))
-                    .unwrap_or_else(|| PathBuf::from("mlx-serve.py"))
+                    .map(|directory| directory.join("mlx-runner.sh"))
+                    .unwrap_or_else(|| PathBuf::from("mlx-runner.sh"))
             }),
         }
+    }
+
+    /// The weights the configured engine loads. The included runtime takes a GGUF
+    /// file; the MLX helper takes the directory its pinned profile lives in, which the
+    /// updater and `backend setup` provision.
+    pub fn model_path(&self) -> PathBuf {
+        if self.backend == Backend::MlxAudio
+            && let Ok(store) = crate::model::Store::profile_at(&data_dir(), self.backend.profile())
+        {
+            return store.directory;
+        }
+        self.model.clone()
     }
 
     /// The configuration that runs the included engine, for when the selected engine
@@ -398,9 +410,23 @@ mod tests {
         assert_eq!(
             config.runtime_path(),
             std::path::PathBuf::from(
-                "/Applications/Nemo.app/Contents/Resources/runtime/mlx-serve.py"
+                "/Applications/Nemo.app/Contents/Resources/runtime/mlx-runner.sh"
             )
         );
+    }
+
+    #[test]
+    fn the_mlx_backend_loads_its_managed_profile_not_the_gguf_control_path() {
+        let config = Config {
+            backend: Backend::MlxAudio,
+            ..Config::default()
+        };
+        assert_eq!(
+            config.model_path(),
+            data_dir().join("models").join("main"),
+            "the helper must load the profile that setup provisions"
+        );
+        assert_eq!(Config::default().model_path(), Config::default().model);
     }
 
     #[test]

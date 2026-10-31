@@ -84,7 +84,7 @@ pub fn helper_inference_command(runtime: &std::path::Path) -> Command {
 }
 
 /// Fixed rather than inherited, so the engine cannot be steered by the caller's PATH.
-const HELPER_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+const HELPER_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 #[cfg(test)]
 mod helper_env_tests {

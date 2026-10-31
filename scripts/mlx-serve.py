@@ -27,12 +27,26 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-CACHE = Path.home() / "Library/Caches/nemo-mlx/NVFP4"
+MANAGED = Path.home() / "Library/Application Support/Nemo/models/main"
 DRAFT = int(os.environ.get("NEMO_MLX_DRAFT", "8"))
 WIRED = int(os.environ.get("NEMO_MLX_WIRED", "0") or 0)
-CACHE = int(os.environ.get("NEMO_MLX_CACHE", "0") or 0)
+CACHE_LIMIT = int(os.environ.get("NEMO_MLX_CACHE", "0") or 0)
 WARMUP = os.environ.get("NEMO_MLX_WARMUP") == "1"
 COMPILE = os.environ.get("NEMO_MLX_COMPILE") == "1"
+
+
+def weights(argument):
+    """The profile directory to load, preferring what the caller pinned.
+
+    The installed app passes the managed profile directory. A benchmark passes the
+    decoder GGUF because that is the shared runtime contract, so fall back to the
+    pinned managed profile. An unprovisioned profile fails rather than silently
+    loading some other copy of the weights.
+    """
+    for candidate in (argument, os.environ.get("NEMO_MLX_MODEL"), MANAGED):
+        if candidate and (Path(candidate) / "model.safetensors.index.json").is_file():
+            return Path(candidate)
+    raise SystemExit(f"mlx-serve: no NVFP4 weights at {MANAGED}; run: nemo backend setup mlx-audio")
 
 
 def parse(argv):
@@ -40,6 +54,7 @@ def parse(argv):
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--api-key", default="")
+    parser.add_argument("--asr-model", default="")
     args, _unknown = parser.parse_known_args(argv)
     return args
 
@@ -113,21 +128,25 @@ def main():
     import mlx.core as mx
     if WIRED:
         mx.set_wired_limit(WIRED)
-    if CACHE:
-        mx.set_cache_limit(CACHE)
+    if CACHE_LIMIT:
+        mx.set_cache_limit(CACHE_LIMIT)
     if COMPILE:
         mx.enable_compile()
-    print(f"[mlx-serve] loading draft={DRAFT} wired={WIRED} cache={CACHE} warmup={WARMUP} compile={COMPILE}", flush=True)
-    Handler.model = load(str(Path.home() / "Library/Caches/nemo-mlx/NVFP4"), strict=True)
+    path = weights(args.asr_model)
+    print(f"[mlx-serve] loading model={path} draft={DRAFT} wired={WIRED} cache={CACHE_LIMIT} warmup={WARMUP} compile={COMPILE}", flush=True)
+    Handler.model = load(str(path), strict=True)
     if WARMUP:
         # pay Metal kernel compilation on a throwaway request, not the user's first
         import wave
-        probe = Path.home() / "Library/Caches/nemo-mlx/warmup.wav"
-        if not probe.exists():
-            with wave.open(str(probe), "wb") as w:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            probe = handle.name
+        try:
+            with wave.open(probe, "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
                 w.writeframes(b"\x00\x00" * 16000)
-        Handler.model.generate(str(probe), speculative=DRAFT > 0, num_draft_tokens=DRAFT or 4, temperature=0, max_tokens=32)
+            Handler.model.generate(probe, speculative=DRAFT > 0, num_draft_tokens=DRAFT or 4, temperature=0, max_tokens=32)
+        finally:
+            os.unlink(probe)
     Handler.key = args.api_key
     server = HTTPServer((args.host, args.port), Handler)
     print(f"HTTP API listening on http://{args.host}:{args.port}", flush=True)

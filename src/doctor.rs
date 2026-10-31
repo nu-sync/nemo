@@ -200,10 +200,48 @@ pub fn run(config: &Config, color: Color) {
     match receiver.recv_timeout(Duration::from_secs(2)) {
         Ok(Ok(inputs)) => {
             match inputs.resolve(config.microphone.as_ref()) {
-                Ok((device, false)) => print!(
-                    "{}",
-                    row(color, 32, "OK", &format!("Microphone: {}", device.name))
-                ),
+                Ok((device, false)) => {
+                    print!(
+                        "{}",
+                        row(color, 32, "OK", &format!("Microphone: {}", device.name))
+                    );
+                    if permissions::Snapshot::current().microphone
+                        == permissions::Microphone::Authorized
+                    {
+                        match audio::probe(config.microphone.as_ref()) {
+                            Ok(configuration) => print!(
+                                "{}",
+                                row(
+                                    color,
+                                    32,
+                                    "OK",
+                                    &format!("Microphone stream configuration: {configuration}")
+                                )
+                            ),
+                            Err(error) => print!(
+                                "{}",
+                                row(
+                                    color,
+                                    31,
+                                    "ERROR",
+                                    &format!(
+                                        "Microphone stream configuration unsupported: {error:#}. Reconnect it or choose another input in Nemo Settings."
+                                    )
+                                )
+                            ),
+                        }
+                    } else {
+                        print!(
+                            "{}",
+                            row(
+                                color,
+                                33,
+                                "NOT TESTED",
+                                "Microphone stream configuration requires microphone permission"
+                            )
+                        );
+                    }
+                }
                 Ok((device, true)) => print!(
                     "{}",
                     row(

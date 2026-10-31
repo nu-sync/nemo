@@ -36,9 +36,10 @@ def normalize(text):
 
 
 def processes():
-    output = subprocess.check_output(["/bin/ps", "-A", "-o", "pid=,ppid=,comm="], text=True)
-    return [(int(parts[0]), int(parts[1]), parts[2]) for line in output.splitlines()
-            if len(parts := line.strip().split(None, 2)) == 3]
+    output = subprocess.check_output(["/bin/ps", "-A", "-o", "pid=,ppid=,comm=,args="], text=True)
+    return [(int(parts[0]), int(parts[1]), parts[2], parts[3])
+            for line in output.splitlines()
+            if len(parts := line.strip().split(None, 3)) == 4]
 
 
 def observe_idle(args, report, save, status, runtime_pids):
@@ -246,10 +247,16 @@ def main():
 
     def runtime_pids():
         rows = processes()
-        if not any(pid == daemon_pid and command == str(binary) for pid, _, command in rows):
+        if not any(pid == daemon_pid and arguments.split(maxsplit=1)[:1] == [str(binary)]
+                   for pid, _, _, arguments in rows):
             raise Inconclusive("Installed daemon exited or was replaced during verification")
-        return [pid for pid, parent, command in rows
-                if parent == daemon_pid and Path(command).resolve() == runtime]
+        if config.get("backend", "nemo-speech") == "mlx-audio":
+            runner = Path(config.get("mlx_runtime", runtime.parent / "mlx-runner.sh")).resolve()
+            helper = runner.parent / "mlx-serve.py"
+            return [pid for pid, parent, _, arguments in rows
+                    if parent == daemon_pid and str(helper) in arguments]
+        return [pid for pid, parent, _, arguments in rows
+                if parent == daemon_pid and arguments.split(maxsplit=1)[:1] == [str(runtime)]]
 
     def read_events():
         nonlocal log_buffer
@@ -301,7 +308,8 @@ def main():
         report["permissions"] = json.loads(control(args.data_dir, "permissions"))
         assert report["permissions"] == {"accessibility": True, "microphone": "authorized"}, \
             "Installed daemon must have Accessibility and Microphone permission"
-        matches = [pid for pid, _, command in processes() if command == str(binary)]
+        matches = [pid for pid, _, _, arguments in processes()
+                   if arguments.split(maxsplit=1)[:1] == [str(binary)]]
         assert len(matches) == 1, f"Expected one installed daemon; found {matches}"
         daemon_pid = matches[0]
         report["daemon_pid"] = daemon_pid

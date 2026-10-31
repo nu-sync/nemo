@@ -284,6 +284,7 @@ fn install_checkout(
         && receipt_matches(
             &destination,
             &nemo_build::sha256(&binary)?,
+            &nemo_build::runtime_sha256(root)?,
             &options.version,
         )
     {
@@ -318,11 +319,15 @@ fn install_checkout(
     Ok(())
 }
 
-fn receipt_matches(app: &Path, hash: &str, version: &str) -> bool {
+fn receipt_matches(app: &Path, hash: &str, runtime: &str, version: &str) -> bool {
     fs::read(app.join("Contents/Resources/install-receipt.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|receipt| receipt["source_sha256"] == hash && receipt["version"] == version)
+        .is_some_and(|receipt| {
+            receipt["source_sha256"] == hash
+                && receipt["runtime_sha256"] == runtime
+                && receipt["version"] == version
+        })
 }
 
 fn confirm_running(binary: &Path, app: &Path) -> Result<()> {
@@ -538,11 +543,32 @@ mod tests {
         fs::create_dir_all(receipt.parent().unwrap()).unwrap();
         fs::write(
             receipt,
-            "{\"source_sha256\":\"new-binary\",\"version\":\"0.2.0\"}",
+            "{\"source_sha256\":\"new-binary\",\"runtime_sha256\":\"new-runtime\",\"version\":\"0.2.0\"}",
         )
         .unwrap();
-        assert!(receipt_matches(temporary.path(), "new-binary", "0.2.0"));
-        assert!(!receipt_matches(temporary.path(), "old-binary", "0.2.0"));
-        assert!(!receipt_matches(temporary.path(), "new-binary", "0.1.0"));
+        assert!(receipt_matches(
+            temporary.path(),
+            "new-binary",
+            "new-runtime",
+            "0.2.0"
+        ));
+        assert!(!receipt_matches(
+            temporary.path(),
+            "old-binary",
+            "new-runtime",
+            "0.2.0"
+        ));
+        assert!(!receipt_matches(
+            temporary.path(),
+            "new-binary",
+            "old-runtime",
+            "0.2.0"
+        ));
+        assert!(!receipt_matches(
+            temporary.path(),
+            "new-binary",
+            "new-runtime",
+            "0.1.0"
+        ));
     }
 }

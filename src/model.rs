@@ -349,6 +349,9 @@ fn download_asset(
     retries: u8,
 ) -> Result<()> {
     let target = directory.join(&asset.name);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
     if verify_file(&target, asset, canceled).is_ok() {
         return Ok(());
     }
@@ -719,6 +722,27 @@ mod tests {
         );
         assert_eq!(fs::read(store.decoder()).unwrap(), bytes);
         assert!(!store.decoder().with_extension("gguf.part").exists());
+    }
+
+    #[test]
+    fn a_pinned_file_in_a_subdirectory_gets_its_parent_created() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = fixture(root.path());
+        fs::create_dir(&store.directory).unwrap();
+        store.manifest.files = vec![Asset {
+            name: "licenses/THIRD-PARTY.txt".into(),
+            bytes: 7,
+            sha256: String::new(),
+        }];
+        let result = download_asset(
+            &store.directory,
+            &store.manifest.files[0],
+            "http://127.0.0.1:1/unreachable",
+            &AtomicBool::new(false),
+            0,
+        );
+        assert!(result.is_err());
+        assert!(store.directory.join("licenses").is_dir());
     }
 
     #[test]

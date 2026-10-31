@@ -245,3 +245,61 @@ is claimed. The local changes are not in git: see `artifacts/mtp-metal/` in the
 `nemo-inference-backends` worktree and `~/Library/Caches/nemo-mtp/attempt-1-full.diff`.
 Any future attempt should adopt the `positions remain consecutive` failure as its
 acceptance test.
+
+## Confirmation at 100 warm samples per fixture
+
+Two separate stage-C runs measured the shipped `nemo-speech` runtime against the
+bundled MLX helper through the same HTTP contract. Each run used 5/10/20/30-second
+fixtures, ten alternating visits and ten repeats per fixture, giving 100 warm
+samples per fixture per engine. Both runs finished `state=complete`, passed the
+structure/accuracy audit, reproduced the same transcripts at 0.00% WER, and left
+zero MLX engines behind. The first ran with the installed daemon idle; the second
+ran with Nemo closed because live dictation had twice made the daemon guard refuse
+a measurement. Every round had MLX faster on every fixture.
+
+| clip | run | nemo-speech p50 / p95 | mlx-audio p50 / p95 | median paired change |
+| --- | --- | ---: | ---: | ---: |
+| 5 s | 1 | 307.0 / 326.3 ms | 178.9 / 183.2 ms | -41.95% |
+| 5 s | 2 | 306.8 / 316.4 ms | 179.8 / 185.6 ms | -41.52% |
+| 10 s | 1 | 462.7 / 490.4 ms | 285.7 / 294.8 ms | -38.35% |
+| 10 s | 2 | 462.3 / 486.5 ms | 287.3 / 297.5 ms | -38.18% |
+| 20 s | 1 | 752.0 / 789.7 ms | 445.8 / 459.7 ms | -40.93% |
+| 20 s | 2 | 751.9 / 784.5 ms | 445.8 / 462.0 ms | -40.88% |
+| 30 s | 1 | 1062.9 / 1121.8 ms | 642.6 / 667.5 ms | -39.93% |
+| 30 s | 2 | 1061.4 / 1101.7 ms | 641.5 / 660.4 ms | -39.88% |
+
+That is **1.61–1.72x** on p50 and the same direction on p95, consistent with the
+earlier screening numbers. The 40/50/60-second guard screen (five visits, three
+repeats) also stayed in the same range: 1.56x, 1.60x and 1.58x on p50. The 60-second
+MLX p95 was a single 1431 ms sample against a 1199 ms p50, so the tail at the
+longest guard duration is noisier than the confirmation fixtures. Both engines made
+the same two substitutions on that 60-second fixture; the accuracy audit reported
+no regression. This is a screening sample count for the guards, not a p95 claim.
+
+**Verdict: keep.** The 1.6x HTTP latency gain is confirmed on the important
+durations with 100 warm samples per fixture and no WER regression. It is still not
+the product objective: these numbers exclude capture, finalization, clipboard write
+and visible insertion, and four fixtures at each of four durations are not broad
+accuracy coverage.
+
+## Installed path, including visible insertion
+
+Two installed acoustic checks passed on the bundled helper with
+`"engine":"mlx-audio"` and `"reused_model":true`. The clipboard-only run used a
+7.23 s capture: 920 ms request and 942 ms stop-to-dispatch. Two separate runs used an
+empty scratch TextEdit document, verified TextEdit foreground before start and
+stop, and confirmed the inserted text afterwards. The first measured a 7.73 s
+capture, 940 ms request and **970 ms stop-to-dispatch**; the final installed
+build measured 7.73 s, 915 ms and **950 ms**. A third run polled the document every
+50 ms while the same installed MLX path ran, so it could timestamp the visible
+text rather than only observe it afterwards: a 7.67 s capture, 832 ms request,
+860 ms stop-to-dispatch and **986 ms stop-to-visible**. The poll interval and the
+AppleScript read cost make that an upper bound, not millisecond accuracy, and it is
+one run at one duration rather than a p95. Dispatch is not insertion; here insertion
+was separately confirmed to have happened. The user's configuration was preserved;
+each scratch document was closed without saving.
+
+Evidence: `artifacts/performance/mlx-ship-20261031-124041/` (`confirm1`,
+`confirm2c`, `guards`, their audit JSON, console output and exit codes). The
+rejected guarded attempts during live dictation are retained there as
+`confirm2/` and `confirm2b-console.txt`.
