@@ -17,6 +17,25 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// Every backend, in the order a settings list would show them.
+    pub fn all() -> impl Iterator<Item = Self> {
+        [Self::NemoSpeech, Self::MlxAudio].into_iter()
+    }
+
+    /// The weight profile this backend runs, which is how the store and the CLI
+    /// name it.
+    pub fn profile(self) -> &'static str {
+        match self {
+            Self::NemoSpeech => crate::model::DEFAULT_PROFILE,
+            Self::MlxAudio => "mlx-audio",
+        }
+    }
+
+    /// The backend for a profile name, when one exists.
+    pub fn from_profile(profile: &str) -> Option<Self> {
+        Self::all().find(|backend| backend.profile() == profile)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::NemoSpeech => "nemo-speech",

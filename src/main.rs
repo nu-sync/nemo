@@ -20,6 +20,7 @@ mod startup;
 mod storage;
 
 use anyhow::Result;
+use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::{
@@ -68,6 +69,11 @@ enum Command {
     Model {
         #[command(subcommand)]
         command: ModelCommand,
+    },
+    /// Inspect and select an inference backend, and check what it needs.
+    Backend {
+        #[command(subcommand)]
+        command: BackendCommand,
     },
     /// Run the menu bar daemon directly, without installing an app.
     Run,
@@ -135,6 +141,22 @@ enum Command {
     Config {
         #[arg(long)]
         hotkey: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackendCommand {
+    /// Every backend, its engine, and what still blocks it.
+    List,
+    /// Select a backend. Takes effect at the next model load.
+    Use {
+        /// Backend name as printed by `nemo backend list`.
+        name: String,
+    },
+    /// Check an alternative backend's requirements and verify its weights.
+    Setup {
+        /// Backend name as printed by `nemo backend list`.
+        name: String,
     },
 }
 
@@ -432,6 +454,102 @@ fn execute() -> Result<()> {
             }
             print!("{}", toml::to_string_pretty(&config)?);
             Ok(())
+        }
+        Command::Backend { command } => {
+            let data = config::data_dir();
+            match command {
+                BackendCommand::List => {
+                    let selected = config.backend;
+                    for backend in config::Backend::all() {
+                        let weights = model::Store::profile_at(&data, backend.profile())
+                            .map(|store| store.state())
+                            .unwrap_or(model::ProfileState::Unprovisioned {
+                                missing: 0,
+                                total: 0,
+                            });
+                        let mut probe = config.clone();
+                        probe.backend = backend;
+                        let engine = probe.runtime_path().is_file();
+                        let tools = match backend {
+                            config::Backend::MlxAudio => {
+                                Some(crate::prerequisite::Observed::current().state())
+                            }
+                            config::Backend::NemoSpeech => None,
+                        };
+                        println!(
+                            "{}{}: weights {}, engine {}{}",
+                            if backend == selected { "* " } else { "  " },
+                            backend.profile(),
+                            if weights.is_usable() {
+                                "ready"
+                            } else {
+                                "not provisioned"
+                            },
+                            if engine { "present" } else { "missing" },
+                            tools
+                                .map(|state| format!(
+                                    ", tools {}",
+                                    state.reason().unwrap_or_else(|| "ready".into())
+                                ))
+                                .unwrap_or_default()
+                        );
+                    }
+                    Ok(())
+                }
+                BackendCommand::Use { name } => {
+                    let backend = config::Backend::from_profile(&name).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Unknown backend '{name}'. Known backends: {}",
+                            config::Backend::all()
+                                .map(config::Backend::profile)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
+                    Config::update(|config| {
+                        config.backend = backend;
+                        Ok(())
+                    })?;
+                    println!("Selected backend: {}", backend.label());
+                    Ok(())
+                }
+                BackendCommand::Setup { name } => {
+                    let backend = config::Backend::from_profile(&name)
+                        .with_context(|| format!("Unknown backend '{name}'"))?;
+                    let store = model::Store::profile_at(&data, backend.profile())?;
+                    if backend != config::Backend::NemoSpeech {
+                        let tools = crate::prerequisite::Observed::current().state();
+                        if !tools.is_ready() {
+                            bail!(
+                                "{} -- run: {}",
+                                tools.reason().unwrap_or_default(),
+                                tools.remedy().unwrap_or_default()
+                            );
+                        }
+                        println!(
+                            "Helper tools: {}",
+                            tools.reason().unwrap_or_else(|| "ready".into())
+                        );
+                    }
+                    let canceled = Arc::new(AtomicBool::new(false));
+                    let state = store.verify_state(&canceled)?;
+                    if !state.is_usable() {
+                        bail!(
+                            "{}",
+                            state.reason().unwrap_or_else(|| "weights unusable".into())
+                        );
+                    }
+                    println!(
+                        "Weights [{}]: {}",
+                        backend.profile(),
+                        match state {
+                            model::ProfileState::Verified => "verified",
+                            _ => "present, hashes not checked",
+                        }
+                    );
+                    Ok(())
+                }
+            }
         }
         Command::Model { command } => {
             let store = model::Store::managed();
