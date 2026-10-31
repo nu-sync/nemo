@@ -171,7 +171,12 @@ impl Backend {
         let log = File::create(config::data_dir().join("inference.log"))?;
         use std::os::unix::fs::PermissionsExt;
         log.set_permissions(fs::Permissions::from_mode(0o600))?;
-        let mut command = crate::network::inference_command(&self.config.runtime_path());
+        let runtime = self.config.runtime_path();
+        let mut command = if self.config.backend == crate::config::Backend::NemoSpeech {
+            crate::network::inference_command(&runtime)
+        } else {
+            crate::network::helper_inference_command(&runtime)
+        };
         command
             .args(["serve", "--asr-model"])
             .arg(&self.config.model)

@@ -60,10 +60,77 @@ fn apply(profile: &str) -> Result<()> {
     Ok(())
 }
 
+/// The bundled runtime needs no environment at all.
 pub fn inference_command(runtime: &std::path::Path) -> Command {
     let mut command = Command::new("/usr/bin/sandbox-exec");
     command.args(["-p", LOCAL_ONLY]).arg(runtime).env_clear();
     command
+}
+
+/// An out-of-tree engine helper is a script, so its launcher has to find an
+/// interpreter. It gets the smallest environment that can do that and nothing else:
+/// inheriting this process's environment would hand the engine every token and API key
+/// the user has exported.
+pub fn helper_inference_command(runtime: &std::path::Path) -> Command {
+    let mut command = inference_command(runtime);
+    command.env("PATH", HELPER_PATH);
+    if let Some(home) = std::env::var_os("HOME") {
+        command.env("HOME", home);
+    }
+    if let Some(cache) = std::env::var_os("UV_CACHE_DIR") {
+        command.env("UV_CACHE_DIR", cache);
+    }
+    command
+}
+
+/// Fixed rather than inherited, so the engine cannot be steered by the caller's PATH.
+const HELPER_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+#[cfg(test)]
+mod helper_env_tests {
+    use super::*;
+
+    #[test]
+    fn the_bundled_runtime_gets_no_environment_at_all() {
+        let command = inference_command(std::path::Path::new("/runtime/nemo-speech"));
+        assert_eq!(command.get_envs().count(), 0);
+    }
+
+    #[test]
+    fn a_helper_gets_a_fixed_path_and_never_the_parent_environment() {
+        // Planted to prove it is not inherited.
+        unsafe { std::env::set_var("NEMO_TEST_SECRET", "sk-do-not-leak") };
+        let home = std::env::var_os("HOME");
+        let command = helper_inference_command(std::path::Path::new("/runtime/helper.py"));
+        let pairs: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)> = command
+            .get_envs()
+            .map(|(key, value)| (key.to_os_string(), value.map(|v| v.to_os_string())))
+            .collect();
+
+        let keys: Vec<String> = pairs
+            .iter()
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        assert!(keys.contains(&"PATH".to_string()), "{keys:?}");
+        assert!(
+            !keys.contains(&"NEMO_TEST_SECRET".to_string()),
+            "the parent environment must not be inherited: {keys:?}"
+        );
+        assert!(!keys.iter().any(|key| key.contains("TOKEN")), "{keys:?}");
+
+        let path = pairs
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .and_then(|(_, value)| value.clone())
+            .expect("PATH is set");
+        assert_eq!(path.to_string_lossy(), HELPER_PATH);
+
+        if let Some(home) = home {
+            assert!(keys.contains(&"HOME".to_string()));
+            assert!(command.get_envs().count() >= 2, "{home:?}");
+        }
+        unsafe { std::env::remove_var("NEMO_TEST_SECRET") };
+    }
 }
 
 #[cfg(test)]
