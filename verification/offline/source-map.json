@@ -1,16 +1,16 @@
 {
   "src/main.rs": {
-    "sha256": "8b5719febbfcc6c638eb1024937a103d01977148830a3ac9dafd0b5661aed515",
+    "sha256": "e290f2c84888c38672fdc2ad1a234e5e1e90c04c832139185ff8f275c4981553",
     "symbols": "run; Job::Download; recording worker",
     "mapping": "ChooseStartup, LockSuccess/Failure, BeginDownload, DropDownloadHelper, ReapDownloadHelper, Record"
   },
   "src/download.rs": {
-    "sha256": "3844e833f246f79c4ac7994dcbbb00298814040324593b64ff0a22e1932f4d39",
+    "sha256": "43c2a48c764d0008cc4a422464345d73231ca7d88c9fcfa79622977c5fa3b21f",
     "symbols": "Downloader::spawn/download/drop; worker",
     "mapping": "HelperReady, CancelPublishedResult, DropDownloadHelper, ReapDownloadHelper, ParentWatchdog, HelperKilled; fixed pipe has no audio parameter"
   },
   "src/backend.rs": {
-    "sha256": "b36c54cb783dbb8dfc92787a976cd86134d1238fe6923fc28b94ad702cae076b",
+    "sha256": "30de0d66273bd9af3b4c1d59f9cb3a5d6bb3fad419caa0d5fa8ce808f48fea2c",
     "symbols": "Process::stop; Backend::load/transcribe",
     "mapping": "Infer, InferenceExits; native child ownership only"
   },
