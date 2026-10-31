@@ -1,122 +1,58 @@
 # Setting up the MLX-Audio backend
 
-What this is: an **experimental** second engine that measured **1.58-1.70x** faster
-than the included runtime on the frozen corpus, with unchanged word error rate. See
-[the MLX-Audio experiment](mlx-audio-experiment.md) for the numbers and their limits.
+The experimental MLX-Audio engine measured **1.58–1.70x** faster than the included runtime on the frozen corpus, with unchanged word error rate. See [the MLX-Audio experiment](mlx-audio-experiment.md) for the measurements and their limits.
 
-What this is not: a shipped feature. There is no installer, no download command and
-no fallback yet, so the steps below are manual and the state they leave on disk is
-machine-specific. The included engine stays the default and keeps working throughout.
+Nemo keeps `nemo-speech` as the default. MLX-Audio requires Apple silicon, macOS 26+, user-installed `uv`, Python 3.12+, and about 22 GB for its pinned NVFP4 weights plus ~25.5 GB of memory while loaded. Nemo detects missing prerequisites and prints the remedy; it never installs tooling.
 
-## Requirements
-
-- Apple silicon, macOS 26 or newer.
-- **`uv` on PATH** — a hard requirement, installed by you (`brew install uv`).
-  Check with `nemo backend list`; the alternative row reports `tools ready` or the
-  exact command that fixes it.
-- Python 3.12 or newer, which `uv` can fetch itself.
-- About **22 GB** free for the NVFP4 weights, plus ~25.5 GB of memory while loaded.
-
-## 1. Install the app
+## Install and provision
 
 ```sh
-nemo quit                       # the installer refuses to replace a running app
+nemo quit
 cargo xtask install
-cargo install --path . --locked --force   # optional: refresh `nemo` on PATH
+nemo backend setup mlx-audio
 ```
 
-Quitting first matters: `cargo xtask install` reports
-"The responding daemon does not match the installed build" and exits without
-replacing anything if a daemon is running.
+Quit Nemo before installing: `cargo xtask install` refuses to replace a running app. The app bundle includes `mlx-serve.py`, its lockfile, and `mlx-runner.sh` in `Contents/Resources/runtime/`; `mlx_runtime` can remain unset. `nemo backend setup mlx-audio` downloads missing weights from the pinned manifest into the managed profile directory (`models/main`) and checks every recorded SHA-256 digest. Setup reports `verified` on success. Its dedicated downloader has a scoped network grant and is retired after the fetch; inference remains under the local-only sandbox. A second setup with usable weights performs local verification without starting a downloader. The bundled helper loads that managed profile, so deleting the development cache does not break the app.
 
-`~/.cargo/bin/nemo` and `~/Applications/Nemo.app/Contents/MacOS/nemo` are separate
-binaries that can drift. `nemo backend list` failing with
-`unrecognized subcommand 'backend'` means you are running a stale one.
-
-## 2. Put the engine and the weights in place
-
-The helper ships as scripts, so keep them somewhere durable — not in a worktree:
+## Select and run
 
 ```sh
-mkdir -p ~/Library/Caches/nemo-mlx
-cp scripts/mlx-serve.py scripts/mlx-serve.py.lock scripts/mlx-runner.sh \
-   ~/Library/Caches/nemo-mlx/
-chmod +x ~/Library/Caches/nemo-mlx/mlx-runner.sh
-~/Library/Caches/nemo-mlx/mlx-runner.sh serve --port 8099 &
+nemo backend use mlx-audio
+nemo quit
+open -a "$HOME/Applications/Nemo.app"
+nemo backend list      # * marks the selection; weights and engine should be ready
+nemo warm              # load ahead of dictation
+nemo status
 ```
 
-The first start resolves the pinned Python environment and needs network; later
-starts do not. `curl localhost:8099/health` should report the engine and draft depth.
+The bundled runner applies the wired-memory limit that keeps inference tails tight. It `exec`s the interpreter so Nemo owns and reaps the engine process, and refuses to start a third engine. Do not bypass the runner.
 
-Weights — the profile is pinned in `models/manifest.json` (16 files, 21.6 GB, every
-digest recorded) but **nothing can download through the app yet**. Fetch them and
-link them into the profile's revision directory:
-
-```sh
-hf download nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4 \
-   --local-dir ~/Library/Caches/nemo-mlx/NVFP4
-mkdir -p ~/Library/Application\ Support/Nemo/models/main
-for f in ~/Library/Caches/nemo-mlx/NVFP4/*; do
-  ln -sf "$f" ~/Library/Application\ Support/Nemo/models/main/"$(basename "$f")"
-done
-nemo backend setup mlx-audio    # verifies prerequisites, then hashes the weights
-```
-
-## 3. Select it
-
-`nemo backend use` writes the selection but not the helper path, so add it once:
-
-```toml
-# ~/Library/Application Support/Nemo/config.toml
-backend = "mlx-audio"
-mlx_runtime = "/Users/<you>/Library/Caches/nemo-mlx/mlx-runner.sh"
-```
-
-```sh
-nemo quit; open -a "$HOME/Applications/Nemo.app"
-nemo backend list      # * marks the selection; both rows should read ready
-nemo warm              # loads the engine (~2.1 s measured)
-nemo status            # "Ready - Right Option - Model loaded"
-```
-
-Then dictate. `mlx-runner.sh` applies the wired limit that keeps the tail tight; do
-not launch the helper without it.
-
-## 4. Going back
+## Return to the included backend
 
 ```sh
 nemo backend use nemo-speech
-nemo quit; open -a "$HOME/Applications/Nemo.app"
+nemo quit
+open -a "$HOME/Applications/Nemo.app"
 ```
-
-The included engine needs no weights beyond the ones already present and is
-unaffected by anything above.
 
 ## One engine process, never more
 
-`scripts/mlx-runner.sh` exists to protect two properties, both learned from a leak that
-put six 25 GB engines on one machine:
-
-- **It `exec`s the interpreter**, so the process a supervisor owns *is* the engine.
-  Launching through a shell or through `uv run` makes the engine a grandchild; killing
-  the owned process then leaves 25 GB resident, and with a wired limit it cannot even be
-  paged out. Reaping only works when the owned PID is the engine.
-- **It refuses to start a third engine.** An A/B needs two at most, so anything beyond
-  that is a leak rather than work. `NEMO_ENGINE_CAP` overrides the cap.
-
-Before and after any paired run, count engines; anything but zero afterwards is a leak:
+Before and after any paired benchmark, check that no MLX engines leaked:
 
 ```sh
 pgrep -f 'environments-v2/mlx-serve.*bin/python' | wc -l
-pkill -f 'environments-v2/mlx-serve.*bin/python'
 ```
 
-## Known gaps in this setup
+The expected count after a run is zero. A/B benchmarks may use at most two engines concurrently; one GPU benchmark at a time. See the [benchmark skill](../.agents/skills/benchmark-nemo/SKILL.md) for measurement discipline.
 
-- **No fallback.** If `uv` disappears or the engine fails to load, dictation is not
-  ready rather than slower; nothing drops back to the included engine.
-- **Nothing is verified end to end.** No installed recording or visible-insertion
-  check has run on this artifact, so no stop-to-visible claim exists.
-- **The engine is outside the app bundle**, so an app update does not carry it and a
-  cache cleanup deletes it.
-- **Accuracy evidence is 4 of 12 fixtures** at five visits and one repeat.
+## Verification status
+
+HTTP corpus measurements do not establish stop-to-visible performance. An installed microphone, transcription, clipboard, and visible-insertion check is required before making an end-to-end claim. The current evidence and remaining gaps are tracked in [the experiment record](mlx-audio-experiment.md).
+
+## Provisioning check
+
+A fresh isolated data directory was provisioned from the public
+`nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4` repository: all 16 pinned
+files downloaded, every digest verified, `backend setup` reported `verified`, and
+a second run performed local verification only. The temporary 20 GB copy was then
+deleted; no network-capable download helper remained.

@@ -154,6 +154,40 @@ impl Recording {
     }
 }
 
+pub fn probe(selected: Option<&Microphone>) -> Result<String> {
+    let inputs = Inputs::current()?;
+    let (microphone, fallback) = inputs.resolve(selected)?;
+    ensure!(!fallback, "Saved microphone is unavailable");
+    let device = cpal::default_host()
+        .device_by_id(&microphone.id.parse()?)
+        .context("Microphone disconnected before its stream could be checked")?;
+    let supported = device
+        .default_input_config()
+        .context("Cannot read the microphone's default input configuration")?;
+    let config: cpal::StreamConfig = supported.clone().into();
+    let _stream = match supported.sample_format() {
+        cpal::SampleFormat::F32 => probe_stream::<f32>(&device, &config),
+        cpal::SampleFormat::I16 => probe_stream::<i16>(&device, &config),
+        cpal::SampleFormat::U16 => probe_stream::<u16>(&device, &config),
+        format => bail!("Unsupported microphone sample format: {format}"),
+    }
+    .context("Cannot build the microphone input stream")?;
+    Ok(format!(
+        "{} Hz, {} channel(s), {:?}",
+        config.sample_rate,
+        config.channels,
+        supported.sample_format()
+    ))
+}
+
+fn probe_stream<T>(device: &cpal::Device, config: &cpal::StreamConfig) -> Result<cpal::Stream>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    Ok(device.build_input_stream(config, |_: &[T], _| {}, |_| {}, None)?)
+}
+
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,

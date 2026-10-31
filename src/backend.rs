@@ -186,7 +186,7 @@ impl Backend {
         };
         command
             .args(["serve", "--asr-model"])
-            .arg(&self.config.model)
+            .arg(self.config.model_path())
             .args([
                 "--host",
                 "127.0.0.1",
@@ -227,6 +227,9 @@ impl Backend {
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log);
+        if self.config.backend != crate::config::Backend::NemoSpeech {
+            command.env("NEMO_MLX_MODEL", self.config.model_path());
+        }
         self.process.start(&mut command, canceled)?;
         let base = format!("http://127.0.0.1:{port}");
         let start = Instant::now();

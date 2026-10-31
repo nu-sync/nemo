@@ -84,10 +84,24 @@ pub fn build(options: &Options) -> Result<PathBuf> {
     let contents = app.join("Contents");
     let runtime = contents.join("Resources/runtime");
     fs::create_dir_all(&runtime)?;
+    for name in ["mlx-serve.py", "mlx-serve.py.lock", "mlx-runner.sh"] {
+        let source = options.root.join("scripts").join(name);
+        let destination = runtime.join(name);
+        fs::copy(&source, &destination)
+            .with_context(|| format!("Cannot bundle {}", source.display()))?;
+        let mode = fs::metadata(&destination)?.permissions().mode();
+        let mode = if name.ends_with(".sh") {
+            mode | 0o111
+        } else {
+            mode
+        };
+        fs::set_permissions(&destination, fs::Permissions::from_mode(mode))?;
+    }
     fs::create_dir_all(contents.join("MacOS"))?;
     let binary = contents.join("MacOS/nemo");
     fs::copy(&options.binary, &binary)?;
     let source_sha256 = crate::sha256(&binary)?;
+    let runtime_sha256 = crate::runtime_sha256(&options.root)?;
     let identity = options
         .sign_identity
         .clone()
@@ -212,7 +226,7 @@ pub fn build(options: &Options) -> Result<PathBuf> {
     fs::write(
         contents.join("Resources/install-receipt.json"),
         serde_json::to_vec_pretty(
-            &serde_json::json!({"source_sha256":source_sha256,"version":options.version}),
+            &serde_json::json!({"source_sha256":source_sha256,"runtime_sha256":runtime_sha256,"version":options.version}),
         )?,
     )?;
     sign(
@@ -260,6 +274,9 @@ mod tests {
             ("models/manifest.json", b"{}"), ("vendor/NeMo-Speech.cpp/LICENSE", b"Apache"),
             ("vendor/NeMo-Speech.cpp/NOTICE", b"notice"), ("vendor/NeMo-Speech.cpp/THIRD_PARTY_NOTICES.md", b"third party"),
             ("scripts/entitlements.plist", b"<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict/></plist>"),
+            ("scripts/mlx-serve.py", b"print('helper')"),
+            ("scripts/mlx-serve.py.lock", b"lock"),
+            ("scripts/mlx-runner.sh", b"#!/bin/sh\nexec python3\n"),
         ] {
             let path = root.path().join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -285,8 +302,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(receipt["source_sha256"], expected);
+        assert_eq!(
+            receipt["runtime_sha256"],
+            crate::runtime_sha256(root.path()).unwrap()
+        );
         assert_eq!(receipt["version"], "9.8.7");
         crate::install::verify(&output).unwrap();
+        let runtime = output.join("Contents/Resources/runtime");
+        for name in ["mlx-serve.py", "mlx-serve.py.lock", "mlx-runner.sh"] {
+            assert!(runtime.join(name).is_file(), "missing bundled {name}");
+        }
+        assert_ne!(
+            fs::metadata(runtime.join("mlx-runner.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
         fs::write(
             output.join("Contents/Resources/model-manifest.json"),
             b"tampered",

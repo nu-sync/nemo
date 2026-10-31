@@ -15,7 +15,7 @@
   ],
   "profiles": {
     "mlx-audio": {
-      "repository": "NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4",
+      "repository": "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4",
       "revision": "main",
       "files": [
         {

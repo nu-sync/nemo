@@ -31,11 +31,16 @@ enum HelperState {
 }
 
 impl Downloader {
-    pub fn spawn() -> Result<Self> {
+    pub fn spawn(profile: &str) -> Result<Self> {
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("download-worker")
-            .args(["--parent-pid", &std::process::id().to_string()])
+            .args([
+                "--parent-pid",
+                &std::process::id().to_string(),
+                "--profile",
+                profile,
+            ])
             .env_clear()
             .env("NEMO_DATA_DIR", crate::config::data_dir());
         Self::start(&mut command)
@@ -168,7 +173,7 @@ impl Drop for Downloader {
     }
 }
 
-pub fn worker(parent: u32) -> Result<()> {
+pub fn worker(parent: u32, profile: &str) -> Result<()> {
     ensure!(
         unsafe { libc::getppid() } == parent as i32,
         "Download helper parent changed"
@@ -198,8 +203,8 @@ pub fn worker(parent: u32) -> Result<()> {
         canceled.store(false, Ordering::Release);
         println!("started");
         std::io::stdout().flush()?;
-        let error = model::Store::managed()
-            .download(&canceled)
+        let error = model::Store::profile_at(&crate::config::data_dir(), profile)
+            .and_then(|store| store.download(&canceled))
             .err()
             .map(|error| format!("{error:#}"));
         println!("{}", serde_json::to_string(&error)?);

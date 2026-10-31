@@ -38,3 +38,20 @@ pub fn sha256(path: &Path) -> Result<String> {
         digest.update(&bytes[..count]);
     }
 }
+
+/// Hash the helper files packaged into `Contents/Resources/runtime`.
+///
+/// Installers compare this alongside the executable so a helper-only change is not
+/// mistaken for an already-current installation.
+pub fn runtime_sha256(root: &Path) -> Result<String> {
+    let mut digest = Sha256::new();
+    for name in ["mlx-serve.py", "mlx-serve.py.lock", "mlx-runner.sh"] {
+        let path = root.join("scripts").join(name);
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+        digest.update(name.as_bytes());
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(&bytes);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}

@@ -59,6 +59,8 @@ enum Command {
     DownloadWorker {
         #[arg(long)]
         parent_pid: u32,
+        #[arg(long, default_value = "nemo-speech")]
+        profile: String,
     },
     /// Prepare Nemo.app from this Cargo-installed executable.
     Install {
@@ -374,7 +376,10 @@ fn main() {
 fn execute() -> Result<()> {
     let cli = Cli::parse();
     let command = match cli.command {
-        Some(Command::DownloadWorker { parent_pid }) => return download::worker(parent_pid),
+        Some(Command::DownloadWorker {
+            parent_pid,
+            profile,
+        }) => return download::worker(parent_pid, &profile),
         None if !bootstrap::bundled() => return bootstrap::launch(),
         Some(Command::Install {
             allow_permission_reset,
@@ -400,16 +405,25 @@ fn execute() -> Result<()> {
         None => Command::Run,
         Some(command) => command,
     };
-    let mut downloader = if matches!(
-        command,
+    let download_profile = match &command {
         Command::Model {
-            command: ModelCommand::Download
-        }
-    ) {
-        Some(download::Downloader::spawn()?)
-    } else {
-        None
+            command: ModelCommand::Download,
+        } => Some(model::DEFAULT_PROFILE),
+        Command::Backend {
+            command: BackendCommand::Setup { name },
+        } => config::Backend::from_profile(name)
+            .filter(|backend| *backend != config::Backend::NemoSpeech)
+            .and_then(|backend| {
+                model::Store::profile_at(&config::data_dir(), backend.profile())
+                    .ok()
+                    .filter(|store| !store.state().is_usable())
+                    .map(|_| backend.profile())
+            }),
+        _ => None,
     };
+    let mut downloader = download_profile
+        .map(download::Downloader::spawn)
+        .transpose()?;
     if !matches!(command, Command::Run) {
         network::local_only()?;
     }
@@ -533,7 +547,17 @@ fn execute() -> Result<()> {
                         );
                     }
                     let canceled = Arc::new(AtomicBool::new(false));
-                    let state = store.verify_state(&canceled)?;
+                    let mut state = store.state();
+                    if !state.is_usable() {
+                        let downloader = downloader.as_mut().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "{}",
+                                state.reason().unwrap_or_else(|| "weights unusable".into())
+                            )
+                        })?;
+                        downloader.download(&canceled)?;
+                    }
+                    state = store.verify_state(&canceled)?;
                     if !state.is_usable() {
                         bail!(
                             "{}",
@@ -663,7 +687,7 @@ fn run(mut config: Config) -> Result<()> {
     let mut downloader = if config.model != store.decoder() || store.ready() {
         None
     } else {
-        Some(download::Downloader::spawn()?)
+        Some(download::Downloader::spawn(model::DEFAULT_PROFILE)?)
     };
     network::local_only()?;
     fs::create_dir_all(config::data_dir())?;

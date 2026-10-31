@@ -1,21 +1,21 @@
 {
   "src/main.rs": {
-    "sha256": "e290f2c84888c38672fdc2ad1a234e5e1e90c04c832139185ff8f275c4981553",
+    "sha256": "8d72f524379882a29fdbf3a5f608e5ee4cedb69b541eaa21117882e4105e5951",
     "symbols": "run; Job::Download; recording worker",
     "mapping": "ChooseStartup, LockSuccess/Failure, BeginDownload, DropDownloadHelper, ReapDownloadHelper, Record"
   },
   "src/download.rs": {
-    "sha256": "43c2a48c764d0008cc4a422464345d73231ca7d88c9fcfa79622977c5fa3b21f",
+    "sha256": "98a6cd48e338e040f8527e6a2cb098137266b3dd63a1c5b87c3a49ff4517eec4",
     "symbols": "Downloader::spawn/download/drop; worker",
     "mapping": "HelperReady, CancelPublishedResult, DropDownloadHelper, ReapDownloadHelper, ParentWatchdog, HelperKilled; fixed pipe has no audio parameter"
   },
   "src/backend.rs": {
-    "sha256": "30de0d66273bd9af3b4c1d59f9cb3a5d6bb3fad419caa0d5fa8ce808f48fea2c",
+    "sha256": "7d4e5fd1e0e246068a1e760dff77d3db80c5c6c965f08aeec77c8f1e3678e143",
     "symbols": "Process::stop; Backend::load/transcribe",
     "mapping": "Infer, InferenceExits; native child ownership only"
   },
   "src/network.rs": {
-    "sha256": "508bf22221290fd51d36a4a1eeffd88cec67591722c44eba2f87705d3b42df01",
+    "sha256": "01e058ce936ec59f2722e52f5fb7e15a33333ae958a2ca06b9b540fa2fe06040",
     "symbols": "local_only, apply, download_only, inference_command",
     "mapping": "LockSuccess/Failure, HelperReadsAudio, Infer; helper process-exec denied; OS enforcement assumed"
   },
@@ -25,7 +25,7 @@
     "mapping": "confined means no direct external IP connections; loopback/Unix sockets excluded"
   },
   "src/model.rs": {
-    "sha256": "80dd585a2f58862ab9ca3bbb6d4c6a3567c31698d5ca91a4659861f134e7ad6b",
+    "sha256": "aae4f125f7f7736daa79219166b104b9338721abbbb6e2a81674520a4bddbfc0",
     "symbols": "Store::ready/download; publish/verify_file",
     "mapping": "StartTransfer, TransferCompletes, CancelCompletes, VerifySuccess/Failure; HTTP activity belongs to helper; cached presence/size differs from hash verification"
   }

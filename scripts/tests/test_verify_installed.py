@@ -95,7 +95,8 @@ class InstalledVerifierCleanupTests(unittest.TestCase):
         replacements = [
             (sys, 'argv', argv),
             (verifier, 'control', control),
-            (verifier, 'processes', lambda: [(123, 1, str(self.binary)), (456, 123, str(self.runtime))]),
+            (verifier, 'processes', lambda: [(123, 1, str(self.binary), str(self.binary)),
+                                                   (456, 123, str(self.runtime), str(self.runtime))]),
             (verifier.subprocess, 'run', run),
             (verifier.subprocess, 'check_output', output),
             (verifier.subprocess, 'Popen', speech),

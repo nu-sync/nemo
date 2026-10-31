@@ -15,10 +15,18 @@ authenticates transcription requests to the local native runtime.
 
 A daemon with cached models creates no network-capable download helper. When
 managed weights are missing, it starts a dedicated helper before restricting the
-controller. The private pipe accepts only `download`, with no URL, file contents,
-audio or transcript parameter. The helper cannot read ordinary user files, cannot
-use the microphone, can write only its model workspace, and may connect only over
-TCP port 443. It exits after successful acquisition or when its controller dies.
+controller. The same scoped grant is used by `nemo backend setup mlx-audio` only
+when that profile is not already usable: the helper is started before the command
+applies `local_only()`, then receives the pinned profile name (never a URL or
+arbitrary destination) and downloads into that profile's managed revision directory.
+The command verifies every pinned digest after acquisition. The helper is retired
+and reaped on successful acquisition; failures and cancellation also retire it.
+A subsequent setup with usable weights starts no helper and performs local hash
+verification only. The private pipe accepts only the `download` operation, with no
+URL, file contents, audio or transcript parameter. The helper cannot read ordinary
+user files, cannot use the microphone, can write only its model workspace, and may
+connect only over TCP port 443. It exits after successful acquisition or when its
+controller dies.
 The helper performs HTTP transfers in-process and its sandbox denies subprocess
 execution, so killing it also ends its download activity.
 
