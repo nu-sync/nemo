@@ -13,6 +13,13 @@ evidence and inference comparisons below describe the October 28 build.
 
 Nemo starts loading the model in the background when microphone capture begins, so recording and loading overlap. It then keeps the model for five idle minutes on this laptop. This uses about 20 GB of resident memory; the model and transcription quality stay unchanged.
 
+An [MLX-Audio experiment](mlx-audio-experiment.md) measured **1.58-1.70x** faster
+wall clock through the app's own runtime contract from MTP speculative decoding,
+with unchanged word error rates. It is a measurement of another engine, not a
+shipped change: the installed app still runs the pinned runtime with
+`mtp_draft = 0`. [Pluggable inference backends](pluggable-inference-backend.md)
+records what integration requires.
+
 A separate [conservative VAD experiment](vad-experiment.md) tested trimming leading and trailing silence before inference. It preserved reference words in the tested speech cases, but the delivery-time gains missed the experiment's retention gate, so VAD was not added to the app. The report records the measurements, limits, and conditions for revisiting that decision.
 
 ## Configuration
