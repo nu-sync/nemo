@@ -72,7 +72,7 @@ Migration verifies every SHA-256 first, publishes the managed files, and updates
 
 Combinations such as `Control+Shift+Space` are also supported as the `hotkey` value.
 
-For a latency-focused configuration on a Mac with ample unified memory, use `idle_unload_seconds = 300`. Model loading overlaps recording; `preload_model = false` and `model_warmup = false` avoid unnecessary startup work. The loaded model uses about 20 GB of resident memory. `inference_threads = 0` selects the runtime default (eight on this laptop); `encoder_batch_size` accepts 1–16. See [performance measurements and profiling](performance.md) before tuning these settings.
+For a latency-focused configuration on a Mac with ample unified memory, use `idle_unload_seconds = 300`. Model loading overlaps recording; `preload_model = false` and `model_warmup = false` avoid unnecessary startup work. The loaded model uses about 20 GB of memory with the bundled engine. `backend` selects the engine (`nemo-speech` or `mlx-audio`); leave it out to use `mlx-audio` when it is [set up](mlx-audio-setup.md) and `nemo-speech` otherwise. `mtp_draft_tokens` (0–8) applies to `mlx-audio` only. `inference_threads = 0` selects the runtime default (eight on this laptop); `encoder_batch_size` accepts 1–16. See [performance measurements and profiling](performance.md) before tuning these settings.
 
 ## CLI
 
@@ -184,7 +184,7 @@ The controller is MIT licensed. The model uses OpenMDW-1.1; the native runtime u
 
 ## Model and runtime
 
-Uses [NVIDIA Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B), the [AtomicChat IQ4_NL conversion](https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF), and NVIDIA's [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) Metal backend. The controller, microphone capture, shortcut, and paste integration are Rust. Inference runs in a managed native C++ subprocess. No Python environment, cloud service, or API key is required at runtime.
+Uses [NVIDIA Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B), the [AtomicChat IQ4_NL conversion](https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF), and NVIDIA's [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) Metal backend. The controller, microphone capture, shortcut, and paste integration are Rust. Inference runs in a managed helper subprocess: the native C++ runtime by default, or the optional MLX-Audio helper, which needs `uv` and Python. No cloud service or API key is required at runtime.
 
 ## Microphone selection
 

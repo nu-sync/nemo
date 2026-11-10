@@ -11,7 +11,14 @@ no opt-out or cloud fallback.
 CLI work or daemon UI/recording starts. Inference additionally starts through
 `sandbox-exec` with that policy and an empty inherited environment. The HTTP client
 disables proxies and redirects and addresses only `127.0.0.1`. A random bearer key
-authenticates transcription requests to the local native runtime.
+authenticates transcription requests to the local engine.
+
+The MLX-Audio engine starts through the same `sandbox-exec` policy. It is a script, so
+instead of an empty environment it gets a fixed `PATH`, `HOME`, and `UV_CACHE_DIR` when
+set, and nothing else from the parent. Its helper checks the bearer key as of
+November 9, 2026; before that it answered any loopback caller. If its prepared Python
+environment is missing, the runner's `uv run` fallback cannot reach a package index
+from inside the sandbox, so the load fails and Nemo falls back to the bundled runtime.
 
 A daemon with cached models creates no network-capable download helper. When
 managed weights are missing, it starts a dedicated helper before restricting the
@@ -58,7 +65,10 @@ operations are not covered by the model-only runtime allowance.
 ## Local data
 
 Normal recording and WAV encoding use memory, and native transcription handles
-uploaded bytes in memory. There is no controller recording or transcript-history
+uploaded bytes in memory. The MLX-Audio helper is the exception: it writes each
+request's WAV to a mode-0600 temporary file, because its decoder takes a path, and
+unlinks it when the request ends. A helper killed mid-request leaves that file in the
+user's temporary directory. There is no controller recording or transcript-history
 file. CLI transcription deliberately prints its output. The system clipboard
 retains the last delivered transcript; clipboard synchronization, clipboard
 managers and the application receiving pasted text have their own behavior.
@@ -96,6 +106,13 @@ This is not an exhaustive audit of llama.cpp, ggml, audio parsers, macOS/GPU dri
 or every dependency's implementation. Authentication-key confidentiality across
 different local accounts remains untested; the current native CLI receives it in
 argv. Same-account malicious code and a compromised OS are outside this boundary.
+
+On November 9, 2026 the MLX-Audio path was checked on macOS 26.5.2: under the embedded
+policy its interpreter was denied IPv4, IPv6 and HTTPS connections while loopback
+worked, and during real transcriptions launched by the app each engine held only its
+`127.0.0.1` listening socket and the app's loopback connection. The setup-time download
+helper was not re-exercised. Evidence is in
+`artifacts/performance/engine-ab-20261109/final-check.log`.
 
 Evidence is kept under ignored `artifacts/local-only-audit/`, including failed
 attempts. The first externally sandboxed daemon attempt exposed macOS's rejection

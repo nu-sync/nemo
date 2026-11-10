@@ -115,13 +115,20 @@ enum Command {
         #[arg(long)]
         if_idle: bool,
     },
-    /// Transcribe a WAV file without changing the clipboard unless requested.
+    /// Transcribe WAV files without changing the clipboard unless requested.
+    ///
+    /// Several files share one engine process: the first pays the model load and the
+    /// rest reuse it, which is how the app itself serves consecutive dictations.
     Transcribe {
-        file: PathBuf,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
         #[arg(long)]
         copy: bool,
         #[arg(long)]
         paste: bool,
+        /// Print one JSON object per file instead of the bare transcript.
+        #[arg(long)]
+        json: bool,
     },
     /// Inspect paths, devices, and permissions.
     Doctor {
@@ -600,22 +607,37 @@ fn execute() -> Result<()> {
             println!("Model verified: {}", store.decoder().display());
             Ok(())
         }
-        Command::Transcribe { file, copy, paste } => {
+        Command::Transcribe {
+            files,
+            copy,
+            paste,
+            json,
+        } => {
             anyhow::ensure!(
-                fs::metadata(&file)?.len() <= 64 * 1024 * 1024,
-                "WAV input exceeds 64 MiB"
+                files.len() == 1 || !(copy || paste),
+                "--copy and --paste deliver one transcript; pass a single file"
             );
             let process = backend::Process::default();
             let stopping = process.clone();
             ctrlc::set_handler(move || stopping.shutdown())?;
             let remove_trailing_period = config.remove_trailing_period;
             let mut engines = engines::Engines::new(config, process, engines::Status::default())?;
-            let text = engines.transcribe(fs::read(file)?, &AtomicBool::new(false))?;
-            let text = output::format_transcript(&text, remove_trailing_period);
-            if copy || paste {
-                output::deliver(text, paste, &AtomicBool::new(false))?;
+            for file in files {
+                anyhow::ensure!(
+                    fs::metadata(&file)?.len() <= 64 * 1024 * 1024,
+                    "WAV input exceeds 64 MiB"
+                );
+                let text = engines.transcribe(fs::read(&file)?, &AtomicBool::new(false))?;
+                let text = output::format_transcript(&text, remove_trailing_period);
+                if copy || paste {
+                    output::deliver(text, paste, &AtomicBool::new(false))?;
+                }
+                if json {
+                    println!("{}", serde_json::json!({"file": file, "text": text}));
+                } else {
+                    println!("{text}");
+                }
             }
-            println!("{text}");
             Ok(())
         }
         Command::Doctor { color } => {

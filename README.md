@@ -9,9 +9,24 @@ inference runtime deny external networking; a constrained helper fetches only th
 pinned model. See the [local-only audit](docs/local-only-audit.md) for controls,
 license checks, verification, and the separate network requirements of source installation.
 
+## Engines
+
+Nemo runs one of two local inference engines, chosen in `config.toml` without a rebuild:
+
+| `backend` | What it is | Needs | Memory while loaded |
+| --- | --- | --- | --- |
+| `nemo-speech` | The default: the bundled NeMo-Speech.cpp runtime. Runs after a standard install. | Nothing extra | about 20 GB |
+| `mlx-audio` | Opt-in: MLX-Audio with speculative decoding. **1.50–1.65x faster** on 5–100 second dictations, same word errors. | `uv`, Python 3.12+, a second 21.6 GB download | about 27 GB |
+
+`nemo-speech` is the default. `mlx-audio` is opt-in:
+[set it up](docs/mlx-audio-setup.md) with `nemo backend setup mlx-audio`, then select it
+with `nemo backend use mlx-audio`. If it fails to load, Nemo falls back to `nemo-speech`.
+Numbers are from the
+[November 9 engine comparison](docs/engine-comparison-2026-11-09.md) on an M5 Max.
+
 ## Install
 
-You need **macOS 26 or newer**, an Apple Silicon Mac, [Rust](https://rustup.rs), and [Homebrew](https://brew.sh). Allow **21.35 GB** for the model download, plus space for build files. The loaded model used about **20 GB of memory** in our [M5 Max tests](docs/performance.md).
+You need **macOS 26 or newer**, an Apple Silicon Mac, [Rust](https://rustup.rs), and [Homebrew](https://brew.sh). Allow **21.35 GB** for the model download, plus space for build files. The loaded model used about **20 GB of memory** in our [M5 Max tests](docs/performance.md), or about 27 GB with the optional faster engine.
 
 Install Apple’s Command Line Tools if you haven’t already:
 

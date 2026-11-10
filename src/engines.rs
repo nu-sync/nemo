@@ -126,6 +126,14 @@ impl Engines {
             .as_ref()
             .map(Backend::backend)
             .unwrap_or(Engine::NemoSpeech);
+        self.primary.unload();
+        // The included engine is about to truncate inference.log; keep the failed engine's
+        // output, which is the only record of why it failed.
+        let data = crate::config::data_dir();
+        let kept = data.join("inference-failed.log");
+        let kept = std::fs::rename(data.join("inference.log"), &kept)
+            .is_ok()
+            .then_some(kept);
         eprintln!(
             "{}",
             serde_json::json!({
@@ -133,9 +141,9 @@ impl Engines {
                 "engine": selected.label(),
                 "fallback": standing_in.label(),
                 "reason": reason,
+                "log": kept,
             })
         );
-        self.primary.unload();
         *self.status.lock().unwrap() = Some(format!(
             "{} failed; using {}",
             selected.label(),

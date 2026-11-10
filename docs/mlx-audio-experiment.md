@@ -4,9 +4,11 @@ On October 30, 2026, MLX-Audio running the NVFP4 checkpoint with MTP speculative
 decoding **passed** a first measurement: **1.55–1.69x faster wall clock** than the
 installed runtime on the frozen corpus, with unchanged word error rate.
 
-Nothing was installed, merged, or changed for users by this experiment. The
-installed app still runs the pinned NeMo-Speech.cpp Metal runtime with
-`mtp_draft=0`.
+Nothing was installed, merged, or changed for users by this experiment. Since
+then the engine shipped behind a config-selected interface and was re-measured through
+the app path: see the [engine comparison](engine-comparison-2026-11-09.md), which also
+corrects the memory figure below (25.5 GB is MLX's active memory; the process held
+30–40 GB until its cache was bounded).
 
 Read first: [the inference pipeline](inference-pipeline.md), which establishes
 that 81% of Nemo's latency slope is single-sequence decode. That is the term this

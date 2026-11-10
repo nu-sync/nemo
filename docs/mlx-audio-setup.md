@@ -1,8 +1,8 @@
 # Setting up the MLX-Audio backend
 
-The experimental MLX-Audio engine measured **1.58–1.70x** faster than the included runtime on the frozen corpus, with unchanged word error rate. See [the MLX-Audio experiment](mlx-audio-experiment.md) for the measurements and their limits.
+The MLX-Audio engine with MTP speculative decoding measured **1.50–1.65x** faster than the included runtime on 5–100 second clips through the app's own path, with identical word errors. See [the engine comparison](engine-comparison-2026-11-09.md) for the measurements and their limits.
 
-Nemo keeps `nemo-speech` as the default. MLX-Audio requires Apple silicon, macOS 26+, user-installed `uv`, Python 3.12+, and about 22 GB for its pinned NVFP4 weights plus ~25.5 GB of memory while loaded. Nemo detects missing prerequisites and prints the remedy; it never installs tooling.
+It is opt-in. The default stays `nemo-speech`; MLX-Audio runs only when `config.toml` names it, which `nemo backend use mlx-audio` does. MLX-Audio requires Apple silicon, macOS 26+, user-installed `uv`, Python 3.12+, and about 22 GB for its pinned NVFP4 weights plus about 27 GB of memory while loaded (28.5 GB peak). Nemo detects missing prerequisites and prints the remedy; it never installs tooling.
 
 ## Install and provision
 
@@ -25,7 +25,16 @@ nemo warm              # load ahead of dictation
 nemo status
 ```
 
-The bundled runner applies the wired-memory limit that keeps inference tails tight. It `exec`s the interpreter so Nemo owns and reaps the engine process, and refuses to start a third engine. Do not bypass the runner.
+`nemo backend use` writes the choice to `config.toml`; `nemo backend use nemo-speech` returns to the default. `nemo doctor` shows the engine in force and whether speculative decoding is active.
+
+The one engine option is the draft length, 0–8 tokens per verification step. Eight is the default and the fastest measured; zero disables speculation. It is rejected for `nemo-speech`, which cannot speculate:
+
+```toml
+backend = "mlx-audio"
+mtp_draft_tokens = 8
+```
+
+The bundled runner applies the wired-memory limit that keeps inference tails tight, and a 2 GB limit on MLX's buffer cache. Without the cache limit the engine grew from 30 GB after load to 38–40 GB after long clips. It `exec`s the interpreter so Nemo owns and reaps the engine process, and refuses to start a third engine. Do not bypass the runner.
 
 ## Return to the included backend
 

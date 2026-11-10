@@ -219,6 +219,28 @@ improvement of at least 5% on the important durations, no accuracy regression,
 no serious stress-case regression, and a final installed-path check. Do not call
 a candidate faster merely because a single warm request beat the baseline.
 
+## Compare engines through the app path
+
+`benchmark-corpus.py` drives an engine's HTTP contract. To compare engines the way the
+app runs them (engine chosen by `config.toml`, launched by the app under its sandbox,
+timed by the app's own `request_ms`), package the checkout and use `benchmark-app.py`:
+
+```sh
+cargo xtask package --output "$PWD/artifacts/performance/run/Nemo.app"
+uv run --no-project scripts/benchmark-app.py \
+  --nemo artifacts/performance/run/Nemo.app/Contents/MacOS/nemo \
+  --models "$HOME/Library/Application Support/Nemo/models" --model "$MODEL" \
+  --daemon "$DAEMON" --output artifacts/performance/run/gated
+```
+
+Each engine gets an isolated data directory linked to the model store. It reports
+process-cold requests (a fresh process per file, load included) apart from warm ones,
+the engine's memory footprint, and per-clip word errors. A process that overlapped a
+live dictation, or a workload named with `--competitor`, is discarded and repeated; an
+engine failure is recorded and the process repeated; and no verdict is given when one
+engine's warm repeats on a clip spread more than 1.25x. The
+[November 9 comparison](engine-comparison-2026-11-09.md) is its first result.
+
 ## Observe real usage separately
 
 ```sh

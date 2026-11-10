@@ -25,9 +25,13 @@ if [ "$(running)" -ge "$CAP" ]; then
     exit 75
 fi
 
-CACHE="${NEMO_MLX_CACHE:-$HOME/Library/Caches/nemo-mlx}"
 SCRIPT="${NEMO_MLX_SCRIPT:-$(cd "$(dirname "$0")" && pwd)/mlx-serve.py}"
 export NEMO_MLX_WIRED="${NEMO_MLX_WIRED:-25000000000}"
+# NEMO_MLX_CACHE bounds MLX's buffer cache. Unbounded, freed buffers pile up with every new
+# audio length: 24.4 GB of weights became a 30 GB process after load and 38-40 GB after long
+# clips. 2 GB holds the process at ~27 GB for a few percent of warm latency (measured
+# November 9, 2026; see docs/engine-comparison-2026-11-09.md).
+export NEMO_MLX_CACHE="${NEMO_MLX_CACHE:-2000000000}"
 
 # The uv-managed environment for this script's lock, so the engine process is the one the
 # supervisor spawns. Falls back to `uv run` only if that environment is missing.

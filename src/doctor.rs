@@ -120,6 +120,22 @@ pub fn run(config: &Config, color: Color) {
             )
         )
     );
+    let speculation = match config.backend {
+        crate::config::Backend::NemoSpeech => "off (not available in this runtime)".to_string(),
+        crate::config::Backend::MlxAudio => match config.mtp_draft() {
+            0 => "off (mtp_draft_tokens = 0)".to_string(),
+            tokens => format!("MTP, {tokens} draft tokens per step"),
+        },
+    };
+    print!(
+        "{}",
+        row(
+            color,
+            32,
+            "INFO",
+            &format!("Speculative decoding: {speculation}")
+        )
+    );
     for (name, state) in crate::model::Store::profiles() {
         let ok = state.is_usable();
         print!(

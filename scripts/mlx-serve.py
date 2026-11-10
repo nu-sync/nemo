@@ -8,18 +8,23 @@
 #     "huggingface-hub",
 # ]
 # ///
-"""MLX-Audio behind Nemo's runtime contract, for paired measurement only.
+"""MLX-Audio with MTP speculative decoding behind Nemo's engine contract.
 
-Speaks just enough of `nemo-speech serve` for `scripts/benchmark-corpus.py`:
+Speaks the loopback contract Nemo's `Backend` and `scripts/benchmark-corpus.py` drive:
 `GET /health`, `POST /v1/audio/transcriptions` (multipart `file`, `response_format=json`)
-returning {"text": ...}. Unknown nemo-speech flags are ignored.
+returning {"text": ...}, authorized by the bearer key the launcher passes.
 
-    NEMO_MLX_DRAFT=8 uv run --locked scripts/mlx-serve.py serve --port 8080 --api-key k
+    uv run --locked scripts/mlx-serve.py serve --port 8080 --api-key k --mtp-draft 8
 
-This is an experiment harness. It is not a shipped backend: it needs 21.6 GB of
-NVFP4 weights, loads in ~5.5 s, and holds ~25.5 GB resident.
+`--mtp-draft` (0-8, 0 disables speculation) is the one engine option, and an
+unsupported value fails at startup instead of being ignored. The benchmark harness
+also passes `nemo-speech` tuning flags to every candidate; those are skipped.
+
+Needs the pinned NVFP4 profile (`nemo backend setup mlx-audio`). Bundled with the app
+and selected with `backend = "mlx-audio"`; launch it through `mlx-runner.sh`.
 """
 import argparse
+import hmac
 import json
 import os
 import sys
@@ -28,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 MANAGED = Path.home() / "Library/Application Support/Nemo/models/main"
-DRAFT = int(os.environ.get("NEMO_MLX_DRAFT", "8"))
+MAX_DRAFT = 8  # the model's MTP head drafts at most 8 tokens per verification step
 WIRED = int(os.environ.get("NEMO_MLX_WIRED", "0") or 0)
 CACHE_LIMIT = int(os.environ.get("NEMO_MLX_CACHE", "0") or 0)
 WARMUP = os.environ.get("NEMO_MLX_WARMUP") == "1"
@@ -55,7 +60,10 @@ def parse(argv):
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--api-key", default="")
     parser.add_argument("--asr-model", default="")
+    parser.add_argument("--mtp-draft", type=int, default=int(os.environ.get("NEMO_MLX_DRAFT", MAX_DRAFT)))
     args, _unknown = parser.parse_known_args(argv)
+    if not 0 <= args.mtp_draft <= MAX_DRAFT:
+        raise SystemExit(f"mlx-serve: --mtp-draft must be 0-{MAX_DRAFT}, got {args.mtp_draft}")
     return args
 
 
@@ -72,9 +80,21 @@ def extract_file(body: bytes, content_type: str):
     raise ValueError("no file part")
 
 
+def transcribe(path, max_tokens=2048):
+    """Greedy decoding: speculation is only exact at temperature 0."""
+    return Handler.model.generate(
+        path,
+        speculative=Handler.draft > 0,
+        num_draft_tokens=Handler.draft or 1,
+        temperature=0,
+        max_tokens=max_tokens,
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     model = None
     key = ""
+    draft = MAX_DRAFT
 
     def log_message(self, *a):
         pass
@@ -89,13 +109,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.rstrip("/").endswith("/health"):
-            self.reply(200, {"status": "ok", "engine": "mlx-audio", "draft": DRAFT})
+            import mlx.core as mx
+            self.reply(200, {"status": "ok", "engine": "mlx-audio", "draft": self.draft,
+                             "memory": {"active": mx.get_active_memory(), "cache": mx.get_cache_memory(),
+                                        "peak": mx.get_peak_memory()}})
         else:
             self.reply(404, {"error": "not found"})
 
     def do_POST(self):
         if not self.path.rstrip("/").endswith("/v1/audio/transcriptions"):
             self.reply(404, {"error": "not found"})
+            return
+        offered = self.headers.get("Authorization", "")
+        if self.key and not hmac.compare_digest(offered, f"Bearer {self.key}"):
+            self.reply(401, {"error": "unauthorized"})
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         try:
@@ -107,13 +134,7 @@ class Handler(BaseHTTPRequestHandler):
             handle.write(wav)
             path = handle.name
         try:
-            result = self.model.generate(
-                path,
-                speculative=DRAFT > 0,
-                num_draft_tokens=DRAFT or 4,
-                temperature=0,
-                max_tokens=2048,
-            )
+            result = transcribe(path)
             self.reply(200, {"text": (result.text or "").strip()})
         except Exception as error:
             self.reply(500, {"error": f"{type(error).__name__}: {error}"})
@@ -133,7 +154,9 @@ def main():
     if COMPILE:
         mx.enable_compile()
     path = weights(args.asr_model)
-    print(f"[mlx-serve] loading model={path} draft={DRAFT} wired={WIRED} cache={CACHE_LIMIT} warmup={WARMUP} compile={COMPILE}", flush=True)
+    print(f"[mlx-serve] loading model={path} draft={args.mtp_draft} wired={WIRED} cache={CACHE_LIMIT} warmup={WARMUP} compile={COMPILE}", flush=True)
+    Handler.draft = args.mtp_draft
+    Handler.key = args.api_key
     Handler.model = load(str(path), strict=True)
     if WARMUP:
         # pay Metal kernel compilation on a throwaway request, not the user's first
@@ -144,10 +167,9 @@ def main():
             with wave.open(probe, "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
                 w.writeframes(b"\x00\x00" * 16000)
-            Handler.model.generate(probe, speculative=DRAFT > 0, num_draft_tokens=DRAFT or 4, temperature=0, max_tokens=32)
+            transcribe(probe, max_tokens=32)
         finally:
             os.unlink(probe)
-    Handler.key = args.api_key
     server = HTTPServer((args.host, args.port), Handler)
     print(f"HTTP API listening on http://{args.host}:{args.port}", flush=True)
     server.serve_forever()

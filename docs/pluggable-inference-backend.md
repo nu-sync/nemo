@@ -4,7 +4,13 @@ How to make the inference engine a replaceable component, so a different runtime
 engine, or model can be measured against the same end-to-end suite instead of
 argued about from documentation.
 
-Status: proposal. No code written. The measurements it rests on are in
+Status: partly implemented. As of November 9, 2026 the engine interface exists as
+the `Engine` trait in `src/backend.rs` (not the separate crates and shim proposed in
+§3), with the bundled runtime and the MLX-Audio helper (route D in §7) behind it. The
+bundled runtime remains the default and MLX-Audio is opt-in. See the
+[engine comparison](engine-comparison-2026-11-09.md). Route A, MTP in the bundled
+runtime, is still unbuilt, and §6 describes the state before that work. The
+measurements this proposal rests on are in
 `artifacts/performance/framing-20261030-210101-91766/` and are cited inline.
 
 Read first: [the inference pipeline](inference-pipeline.md) (where the

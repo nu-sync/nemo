@@ -52,10 +52,15 @@ pub struct Config {
     pub hotkey: crate::shortcut::Shortcut,
     pub model: PathBuf,
     pub runtime: PathBuf,
+    /// The engine to run. The bundled runtime unless the file names another: MLX-Audio is
+    /// faster but opt-in (docs/engine-comparison-2026-11-09.md).
     #[serde(skip_serializing_if = "is_default")]
     pub backend: Backend,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mlx_runtime: Option<PathBuf>,
+    /// Tokens the MLX engine drafts per verification step. 0 disables speculation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtp_draft_tokens: Option<u8>,
     pub idle_unload_seconds: u64,
     #[serde(skip_serializing_if = "is_default")]
     pub preload_model: bool,
@@ -72,6 +77,10 @@ pub struct Config {
     #[serde(skip_serializing_if = "is_default")]
     pub sound_pack: crate::sounds::SoundPack,
 }
+
+/// The most tokens the model's MTP head drafts per verification step. Every length was
+/// measured and the longest won on every clip, so it is also the default.
+pub const MAX_MTP_DRAFT: u8 = 8;
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
@@ -90,6 +99,7 @@ impl Default for Config {
             runtime: default_runtime(),
             backend: Backend::default(),
             mlx_runtime: None,
+            mtp_draft_tokens: None,
             idle_unload_seconds: 60,
             preload_model: false,
             model_warmup: false,
@@ -180,6 +190,19 @@ impl Config {
         if let Some(path) = &self.mlx_runtime {
             ensure!(path.is_absolute(), "mlx_runtime must be an absolute path");
         }
+        if let Some(tokens) = self.mtp_draft_tokens {
+            // An option the selected engine would ignore is an error, never a no-op: the
+            // bundled runtime parses a draft length and then forces it to zero.
+            ensure!(
+                self.backend == Backend::MlxAudio,
+                "mtp_draft_tokens is only supported by the mlx-audio backend; {} cannot speculate",
+                self.backend.label()
+            );
+            ensure!(
+                tokens <= MAX_MTP_DRAFT,
+                "mtp_draft_tokens must be 0–{MAX_MTP_DRAFT}"
+            );
+        }
         Ok(())
     }
 
@@ -216,6 +239,11 @@ impl Config {
         }
     }
 
+    /// Draft tokens per verification step for an engine that speculates.
+    pub fn mtp_draft(&self) -> u8 {
+        self.mtp_draft_tokens.unwrap_or(MAX_MTP_DRAFT)
+    }
+
     /// The weights the configured engine loads. The included runtime takes a GGUF
     /// file; the MLX helper takes the directory its pinned profile lives in, which the
     /// updater and `backend setup` provision.
@@ -241,6 +269,7 @@ impl Config {
         }
         Some(Self {
             backend: Backend::NemoSpeech,
+            mtp_draft_tokens: None,
             runtime: default_runtime(),
             model: crate::model::Store::managed().decoder(),
             ..self.clone()
@@ -253,7 +282,21 @@ impl Config {
             "Inference runtime missing for backend '{}'. Reinstall Nemo or set the runtime path in configuration",
             self.backend.label()
         );
-        self.check_model_assets()
+        if self.backend == Backend::NemoSpeech {
+            return self.check_model_assets();
+        }
+        let state = crate::model::Store::profile_at(&data_dir(), self.backend.profile())?.state();
+        ensure!(
+            state.is_usable(),
+            "Weights for backend '{}' are not ready{}. Run `nemo backend setup {}`",
+            self.backend.label(),
+            state
+                .reason()
+                .map(|why| format!(" ({why})"))
+                .unwrap_or_default(),
+            self.backend.profile()
+        );
+        Ok(())
     }
 
     pub fn check_model_assets(&self) -> Result<()> {
@@ -386,6 +429,11 @@ mod tests {
     fn the_default_backend_is_the_bundled_runtime() {
         let config = Config::default();
         assert_eq!(config.backend, Backend::NemoSpeech);
+        assert_eq!(
+            toml::from_str::<Config>("").unwrap().backend,
+            Backend::NemoSpeech,
+            "the faster engine is opt-in: a file that names none runs the bundled runtime"
+        );
         assert_eq!(config.runtime_path(), config.runtime);
     }
 
@@ -405,7 +453,7 @@ mod tests {
             "runtime = {:?}\nbackend = \"mlx-audio\"\n",
             sample_runtime().display().to_string()
         );
-        let config: Config = toml::from_str(&toml).unwrap();
+        let config = toml::from_str::<Config>(&toml).unwrap();
         assert_eq!(config.backend, Backend::MlxAudio);
         assert_eq!(
             config.runtime_path(),
@@ -432,18 +480,39 @@ mod tests {
     #[test]
     fn an_explicit_helper_path_wins_and_must_be_absolute() {
         let toml = "runtime = \"/opt/nemo/nemo-speech\"\nbackend = \"mlx-audio\"\nmlx_runtime = \"/opt/nemo/helper.py\"\n";
-        let config: Config = toml::from_str(toml).unwrap();
+        let config = toml::from_str::<Config>(toml).unwrap();
         assert_eq!(
             config.runtime_path(),
             std::path::PathBuf::from("/opt/nemo/helper.py")
         );
 
         let relative = "runtime = \"/opt/nemo/nemo-speech\"\nbackend = \"mlx-audio\"\nmlx_runtime = \"helper.py\"\n";
-        let config: Config = toml::from_str(relative).unwrap();
+        let config = toml::from_str::<Config>(relative).unwrap();
         assert!(
             config.validate().is_err(),
             "relative helper path must be rejected"
         );
+    }
+
+    #[test]
+    fn a_draft_length_is_rejected_where_it_would_be_ignored_or_unsupported() {
+        let unsupported = Config {
+            mtp_draft_tokens: Some(4),
+            ..Config::default()
+        };
+        let error = unsupported.validate().unwrap_err().to_string();
+        assert!(error.contains("nemo-speech cannot speculate"), "{error}");
+
+        let mlx = |tokens| Config {
+            backend: Backend::MlxAudio,
+            mtp_draft_tokens: tokens,
+            ..Config::default()
+        };
+        assert_eq!(mlx(None).mtp_draft(), 8);
+        mlx(Some(0)).validate().unwrap();
+        mlx(Some(8)).validate().unwrap();
+        assert!(mlx(Some(9)).validate().is_err());
+        assert!(mlx(Some(4)).included().unwrap().validate().is_ok());
     }
 
     #[test]

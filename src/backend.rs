@@ -111,8 +111,150 @@ impl Process {
     }
 }
 
+/// What one inference engine contributes to a load.
+///
+/// Every engine is a helper process speaking the same loopback contract (`GET /health`,
+/// `POST /v1/audio/transcriptions`), so process ownership, readiness, cancellation, the
+/// request and its telemetry are shared in [`Backend`]. An engine supplies only what
+/// differs: the assets it needs, how it is launched, and the record that identifies it.
+pub trait Engine: Send {
+    fn kind(&self) -> config::Backend;
+
+    /// Fails before anything is spawned when the engine cannot possibly load.
+    fn check_assets(&self) -> Result<()>;
+
+    /// The sandboxed command that serves the contract on `127.0.0.1:port`.
+    fn command(&self, port: u16, key: &str) -> Command;
+
+    /// Every option that changes what this engine computes, so a latency is never
+    /// attributed to an engine whose settings went unrecorded.
+    fn identity(&self) -> serde_json::Value;
+}
+
+/// The engine the configuration selects. Chosen once per [`Backend`]; nothing above
+/// this function learns which engine it got.
+pub fn engine(config: &Config) -> Box<dyn Engine> {
+    match config.backend {
+        config::Backend::NemoSpeech => Box::new(NemoSpeech(config.clone())),
+        config::Backend::MlxAudio => Box::new(MlxAudio(config.clone())),
+    }
+}
+
+fn serve(mut command: Command, model: &std::path::Path, port: u16, key: &str) -> Command {
+    command.args(["serve", "--asr-model"]).arg(model).args([
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        "--api-key",
+        key,
+    ]);
+    command
+}
+
+/// The bundled NeMo-Speech.cpp runtime on Metal. It cannot speculate: the runtime
+/// forces `mtp_draft` to 0 off CUDA, so the flag is pinned rather than configurable.
+struct NemoSpeech(Config);
+
+impl Engine for NemoSpeech {
+    fn kind(&self) -> config::Backend {
+        config::Backend::NemoSpeech
+    }
+
+    fn check_assets(&self) -> Result<()> {
+        self.0.check_assets()
+    }
+
+    fn command(&self, port: u16, key: &str) -> Command {
+        let config = &self.0;
+        let mut command = serve(
+            crate::network::inference_command(&config.runtime_path()),
+            &config.model_path(),
+            port,
+            key,
+        );
+        command.args([
+            "--device",
+            "metal",
+            "--threads",
+            "4",
+            "--no-ui",
+            "--asr.backend.threads",
+            &config.inference_threads.to_string(),
+            "--asr.salm.max_sequences",
+            "1",
+            "--asr.salm.n_ctx_per_sequence",
+            "8192",
+            "--asr.salm.max_context",
+            "8192",
+            "--asr.salm.n_batch",
+            "512",
+            "--asr.salm.encoder_max_batch",
+            &config.encoder_batch_size.to_string(),
+            "--asr.salm.max_new_tokens",
+            "4096",
+            "--asr.salm.mtp_draft",
+            "0",
+            "--write-timeout",
+            "300",
+            "--max-upload-mb",
+            "64",
+        ]);
+        if !config.model_warmup {
+            command.arg("--no-warmup");
+        }
+        command
+    }
+
+    fn identity(&self) -> serde_json::Value {
+        serde_json::json!({
+            "engine": self.kind().label(),
+            "runtime": self.0.runtime_path(),
+            "model": self.0.model_path(),
+            "mtp_draft_tokens": 0,
+            "inference_threads": self.0.inference_threads,
+            "encoder_batch_size": self.0.encoder_batch_size,
+            "model_warmup": self.0.model_warmup,
+        })
+    }
+}
+
+/// The MLX-Audio helper with MTP speculative decoding. It takes only the options it
+/// implements; the bundled runtime's tuning flags mean nothing to it and are not sent.
+struct MlxAudio(Config);
+
+impl Engine for MlxAudio {
+    fn kind(&self) -> config::Backend {
+        config::Backend::MlxAudio
+    }
+
+    fn check_assets(&self) -> Result<()> {
+        self.0.check_assets()
+    }
+
+    fn command(&self, port: u16, key: &str) -> Command {
+        let mut command = serve(
+            crate::network::helper_inference_command(&self.0.runtime_path()),
+            &self.0.model_path(),
+            port,
+            key,
+        );
+        command.args(["--mtp-draft", &self.0.mtp_draft().to_string()]);
+        command
+    }
+
+    fn identity(&self) -> serde_json::Value {
+        serde_json::json!({
+            "engine": self.kind().label(),
+            "runtime": self.0.runtime_path(),
+            "model": self.0.model_path(),
+            "mtp_draft_tokens": self.0.mtp_draft(),
+        })
+    }
+}
+
 pub struct Backend {
-    config: Config,
+    engine: Box<dyn Engine>,
     pub process: Process,
     key: String,
     client: Client,
@@ -124,7 +266,7 @@ impl Backend {
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         let key = random.iter().map(|byte| format!("{byte:02x}")).collect();
         Ok(Self {
-            config,
+            engine: engine(&config),
             process,
             key,
             client: Client::builder()
@@ -142,7 +284,7 @@ impl Backend {
     /// The engine this process runs, for status and for telemetry that has to attribute a
     /// latency to a specific engine.
     pub fn backend(&self) -> crate::config::Backend {
-        self.config.backend
+        self.engine.kind()
     }
 
     pub fn unload(&mut self) -> bool {
@@ -161,6 +303,7 @@ impl Backend {
             serde_json::json!({
                 "event": "model_load",
                 "engine": self.backend().label(),
+                "identity": self.engine.identity(),
                 "load_ms": started.elapsed().as_secs_f64() * 1000.0,
                 "success": result.is_ok(),
             })
@@ -170,7 +313,7 @@ impl Backend {
 
     fn load(&mut self, canceled: &AtomicBool) -> Result<()> {
         self.unload();
-        self.config.check_assets()?;
+        self.engine.check_assets()?;
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         drop(listener);
@@ -178,58 +321,11 @@ impl Backend {
         let log = File::create(config::data_dir().join("inference.log"))?;
         use std::os::unix::fs::PermissionsExt;
         log.set_permissions(fs::Permissions::from_mode(0o600))?;
-        let runtime = self.config.runtime_path();
-        let mut command = if self.config.backend == crate::config::Backend::NemoSpeech {
-            crate::network::inference_command(&runtime)
-        } else {
-            crate::network::helper_inference_command(&runtime)
-        };
-        command
-            .args(["serve", "--asr-model"])
-            .arg(self.config.model_path())
-            .args([
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--api-key",
-                &self.key,
-                "--device",
-                "metal",
-                "--threads",
-                "4",
-                "--no-ui",
-                "--asr.backend.threads",
-                &self.config.inference_threads.to_string(),
-                "--asr.salm.max_sequences",
-                "1",
-                "--asr.salm.n_ctx_per_sequence",
-                "8192",
-                "--asr.salm.max_context",
-                "8192",
-                "--asr.salm.n_batch",
-                "512",
-                "--asr.salm.encoder_max_batch",
-                &self.config.encoder_batch_size.to_string(),
-                "--asr.salm.max_new_tokens",
-                "4096",
-                "--asr.salm.mtp_draft",
-                "0",
-                "--write-timeout",
-                "300",
-                "--max-upload-mb",
-                "64",
-            ]);
-        if !self.config.model_warmup {
-            command.arg("--no-warmup");
-        }
+        let mut command = self.engine.command(port, &self.key);
         command
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log);
-        if self.config.backend != crate::config::Backend::NemoSpeech {
-            command.env("NEMO_MLX_MODEL", self.config.model_path());
-        }
         self.process.start(&mut command, canceled)?;
         let base = format!("http://127.0.0.1:{port}");
         let start = Instant::now();
@@ -310,6 +406,12 @@ impl Backend {
                 .context("Transcription request failed")?;
             let status = response.status();
             let body = response.text()?;
+            if status.is_server_error() {
+                // An engine that answers 5xx may be broken for good: the bundled runtime's
+                // Metal backend stays in an error state after one failed command buffer.
+                // Retire it so the next request pays a load instead of failing again.
+                self.unload();
+            }
             ensure!(status.is_success(), "Transcription failed ({status})");
             ensure!(!canceled.load(Ordering::Acquire), "Canceled");
             #[derive(Deserialize)]
@@ -456,6 +558,132 @@ mod tests {
             .unwrap();
         assert!(process.running().unwrap());
         process.stop();
+    }
+
+    fn arguments(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_configuration_selects_the_engine_without_a_rebuild() {
+        for kind in config::Backend::all() {
+            let config = Config {
+                backend: kind,
+                ..Config::default()
+            };
+            assert_eq!(engine(&config).kind(), kind);
+            assert_eq!(
+                Backend::new(config, Process::default()).unwrap().backend(),
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn every_engine_serves_the_same_loopback_contract() {
+        for kind in config::Backend::all() {
+            let config = Config {
+                backend: kind,
+                ..Config::default()
+            };
+            let arguments = arguments(&engine(&config).command(4321, "secret"));
+            for expected in [
+                ["serve", "--asr-model"],
+                ["--host", "127.0.0.1"],
+                ["--port", "4321"],
+                ["--api-key", "secret"],
+            ] {
+                assert!(
+                    arguments.windows(2).any(|pair| pair == expected),
+                    "{kind:?} is missing {expected:?}: {arguments:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_mlx_engine_is_told_its_draft_length_and_nothing_it_cannot_honour() {
+        let config = Config {
+            backend: config::Backend::MlxAudio,
+            mtp_draft_tokens: Some(4),
+            inference_threads: 8,
+            ..Config::default()
+        };
+        let engine = engine(&config);
+        let arguments = arguments(&engine.command(1, "k"));
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--mtp-draft", "4"])
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.starts_with("--asr.")),
+            "the bundled runtime's flags must not reach another engine: {arguments:?}"
+        );
+        assert_eq!(engine.identity()["mtp_draft_tokens"], 4);
+    }
+
+    #[test]
+    fn the_bundled_runtime_never_speculates_and_says_so() {
+        let engine = engine(&Config::default());
+        let arguments = arguments(&engine.command(1, "k"));
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair == ["--asr.salm.mtp_draft", "0"])
+        );
+        assert_eq!(engine.identity()["mtp_draft_tokens"], 0);
+    }
+
+    #[test]
+    fn an_engine_that_answers_a_server_error_is_retired_not_reused() {
+        use std::io::{Read, Write};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            // The whole upload, so the client is reading when the answer arrives.
+            while !request.ends_with(b"--\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                request.extend_from_slice(&chunk[..read]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .unwrap();
+        });
+        let mut wav = std::io::Cursor::new(Vec::new());
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::new(&mut wav, spec).unwrap();
+        (0..1600).for_each(|sample| writer.write_sample(sample as i16).unwrap());
+        writer.finalize().unwrap();
+
+        let canceled = AtomicBool::new(false);
+        let mut backend = Backend::new(Config::default(), Process::default()).unwrap();
+        backend
+            .process
+            .start(Command::new("/bin/sleep").arg("60"), &canceled)
+            .unwrap();
+        backend.process.mark_ready(base, &canceled).unwrap();
+        assert!(backend.loaded());
+        let error = backend.transcribe(wav.into_inner(), &canceled).unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("500"), "{error:#}");
+        assert!(
+            !backend.loaded(),
+            "a failing engine must not serve the next request"
+        );
     }
 
     #[test]

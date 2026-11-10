@@ -11,16 +11,36 @@ The [delivery latency update](delivery-latency.md) describes the newer source ch
 development and installed verification, and paste measurements. The installed-build
 evidence and inference comparisons below describe the October 28 build.
 
-Nemo starts loading the model in the background when microphone capture begins, so recording and loading overlap. It then keeps the model for five idle minutes on this laptop. This uses about 20 GB of resident memory; the model and transcription quality stay unchanged.
+Nemo starts loading the model in the background when microphone capture begins, so recording and loading overlap. It then keeps the model for five idle minutes on this laptop. This uses about 20 GB of memory with the bundled runtime (about 27 GB with `mlx-audio`); the model and transcription quality stay unchanged.
 
-Setting it up by hand is [documented here](mlx-audio-setup.md).
+## Engines
 
-An [MLX-Audio experiment](mlx-audio-experiment.md) measured **1.58-1.70x** faster
-wall clock through the app's own runtime contract from MTP speculative decoding,
-with unchanged word error rates. It is a measurement of another engine, not a
-shipped change: the installed app still runs the pinned runtime with
-`mtp_draft = 0`. [Pluggable inference backends](pluggable-inference-backend.md)
-records what integration requires.
+Measured November 9, 2026 through the app's own request path, five alternating rounds,
+medians with min–max. Full tables, cold loads, failures and limits are in the
+[engine comparison](engine-comparison-2026-11-09.md).
+
+| clip | `nemo-speech` warm | `mlx-audio` warm (MTP, 8 drafts) | speedup | word errors |
+| --- | ---: | ---: | ---: | --- |
+| 5 s | 310 ms (304–334) | 188 ms (183–192) | 1.65x | 0 / 0 |
+| 20 s | 761 ms (748–803) | 468 ms (458–488) | 1.63x | 0 / 0 |
+| 30 s | 1072 ms (1056–1140) | 670 ms (657–695) | 1.60x | 0 / 0 |
+| 60 s | 1916 ms (1891–2003) | 1235 ms (1213–1298) | 1.55x | 2 / 2 |
+| 100 s | 3036 ms (2998–3139) | 1974 ms (1936–2019) | 1.54x | 0 / 0 |
+
+- **What shipped:** both engines sit behind one interface and are selected by `backend`
+  in `config.toml`. The default is unchanged: the bundled `nemo-speech` runtime (still
+  `mtp_draft = 0`). `mlx-audio` is opt-in with `nemo backend setup mlx-audio` and
+  `nemo backend use mlx-audio`.
+- **Memory:** `nemo-speech` 20.2 GB; `mlx-audio` 27.0 GB after a warm pass and 28.5 GB
+  at peak, with its buffer cache now bounded at 2 GB. Unbounded it reached 38–40 GB.
+- **Process-cold, file cache warm:** both engines load in 2.2–2.4 s; a cold 30 s request
+  totals 3.5 s on `nemo-speech` and 2.9 s on `mlx-audio`.
+- **One second of audio is not faster** (1.05x): that request is fixed cost.
+- **Not measured on this build:** capture, clipboard, visible insertion, and p95.
+
+Setting it up by hand is [documented here](mlx-audio-setup.md). The earlier HTTP-level
+[MLX-Audio experiment](mlx-audio-experiment.md) and the
+[interface proposal](pluggable-inference-backend.md) are kept as history.
 
 A separate [conservative VAD experiment](vad-experiment.md) tested trimming leading and trailing silence before inference. It preserved reference words in the tested speech cases, but the delivery-time gains missed the experiment's retention gate, so VAD was not added to the app. The report records the measurements, limits, and conditions for revisiting that decision.
 

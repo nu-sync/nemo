@@ -217,7 +217,8 @@ per-event binary identity, so an unsegmented report is not an A/B experiment.
 
 ## 7. The knobs, and what each can actually touch
 
-Everything Nemo passes to the runtime is in `src/backend.rs::load`. The current
+This document describes the bundled `nemo-speech` engine. Everything Nemo passes to it
+is in the `NemoSpeech` engine in `src/backend.rs`. The current
 profile: `max_sequences=1`, `n_ctx_per_sequence=8192`, `max_context=8192`,
 `n_batch=512`, `encoder_max_batch=1`, `max_new_tokens=4096`, `mtp_draft=0`,
 `--threads 4` (HTTP workers), `--asr.backend.threads <inference_threads>`,
@@ -231,7 +232,9 @@ profile: `max_sequences=1`, `n_ctx_per_sequence=8192`, `max_context=8192`,
 | `preload_model` | config.toml | load at app start | trades startup for first-request |
 | `idle_unload_seconds` | config.toml | retention after last job | affects reuse, not per-request speed |
 | `n_batch` | `backend.rs` | prompt tokens per prefill pass | capped by `n_ubatch=512`; 751 audio tokens take two passes |
-| `mtp_draft` | `backend.rs` | speculative decoding | **forced to 0 on Metal** |
+| `mtp_draft` | `backend.rs` | speculative decoding in `nemo-speech` | **forced to 0 on Metal** |
+| `backend` | config.toml | which engine runs | `mlx-audio` 1.50–1.65x faster at 5–100 s ([comparison](engine-comparison-2026-11-09.md)) |
+| `mtp_draft_tokens` | config.toml | draft length in `mlx-audio`, 0–8 | 8 fastest; rejected for `nemo-speech` |
 | `max_recording_seconds` | config.toml | capture cap | currently 120 s |
 
 Two structural facts that close doors, both verifiable in the vendored runtime
