@@ -14,7 +14,109 @@ The [delivery latency update](delivery-latency.md) describes the October 30
 delivery changes and paste measurements. The engine comparison and 48 kHz
 resampling measurements below are from November.
 
-The 128 GB laptop now preloads MLX-Audio at launch and keeps it resident for the session. The model occupies about 27 GB. Recording can begin during the initial load. Between dictations the worker sleeps and the MLX HTTP helper blocks waiting for a request. During recording, the resident profile submits a small GPU operation every two seconds.
+The 128 GB laptop now preloads MLX-Audio at launch and keeps it resident for the session. The model occupies about 27 GB. Recording can begin during the initial load. Between dictations the worker sleeps and the MLX HTTP helper blocks waiting for a request. During recording, the resident profile submits a small GPU operation every second. With speculative decoding enabled, it can also preview at 3, 6, 12 and 24 seconds.
+
+## Short dictation previews
+
+On November 19, the signed MLX update reached short dictations by refreshing at 3, 6, 12 and 24 seconds. Stop uses the most recent completed preview. The full model checks its proposals and retains the matching opening. On disagreement, the decoder trims attention state and repairs recurrent state before continuing. It keeps the existing single-window limit of 512 positions. Native nemo-speech uses its existing decoder.
+
+| Saved audio | Previous policy | Updated policy |
+| --- | ---: | ---: |
+| 4 s | 202 ms | 135 ms |
+| 5 s | 213 ms | 186 ms |
+| 7 s | 258 ms | 169 ms |
+| 10 s | 299 ms | 240 ms |
+| 20 s | 434 ms | 312 ms |
+
+Six alternating pairs per duration on AC measured simulated Stop through raw transcript receipt. The candidate won all 30 pairs. The earlier single four-second preview gave up the 30-second gain. Refreshing without keeping the verified opening made the seven-second clip slower when it encountered a disagreement. Retaining that opening avoided the full restart. On the seven-second case the previews occupied the helper for a median 422 ms during capture. Energy use is unmeasured.
+
+**Fresh signed-bundle comparison on battery.** Three pairs per recording alternated the order using the same M5 Max, power source, model, waveform and one-second wake interval. A Rust replay adapter supplied PCM as it became available over the full recording duration, then timed the Stop command through receipt of the formatted transcript. The 30-second recording took **366 ms** with the previous helper and **373 ms** with the update. The held-out seven-second recording took **238 ms** and **169 ms** respectively. Reported AC and battery results use separate controls and timing boundaries.
+
+| Stop during preview | Previous Stop to text | Updated Stop to text | Updated Stop to observed interruption |
+| --- | ---: | ---: | ---: |
+| 3.05 s | 148 ms | 146 ms | 8–10 ms |
+| 6.075 s | 205 ms | 176 ms | 11–17 ms |
+| 12.15 s | 305 ms | 227 ms | 4–6 ms |
+
+Two pairs per cutoff used a shortened replay of the earlier recording ticks. For each candidate visit the driver observed the real helper start its latest preview, issued Stop while that preview was computing, and observed its interruption. The first cutoff had no completed draft. Later cutoffs could use an earlier one. Across the six visits, the helper yielded within 4–17 ms and returned the final text in 144–230 ms. Every raw and formatted transcript matched the control for the same cutoff.
+
+**Installation and accuracy.** All twelve frozen clips, five acoustic variants and six additional cutoffs matched control raw transcripts byte for byte. We repeated the 23 comparisons through the installed helper and the archived previous bundle, including Rust PCM conversion and formatting. All 23 raw and formatted transcripts matched. The installed copy also repeated the 30-second case (374 ms), held-out seven-second case and three active-preview cutoffs. All five matched control, and the three interruptions took 5–14 ms. The signed app passed signature verification and the installer confirmed the running executable. The replay covers WAV finalization from saved PCM, local HTTP, inference and receipt of text. Hardware capture closure, Paste dispatch and visible insertion have separate timing boundaries.
+
+Local evidence and replay scripts are in `artifacts/performance/short-swarm-FJyPvH/`. The AC observations are in `bounded/confirm-full-4-5-7-10-20.jsonl`, exact transcript checks in `bounded/accuracy-full.jsonl`, the installed corpus comparison in `resume-corpus.jsonl`, and the complete on-battery pairs and post-install cutoff observations in `resume-qualify.jsonl` and `resume-installed.jsonl`. Run `uv run --no-project python artifacts/performance/short-swarm-FJyPvH/resume-gates.py --gate --installed` from the checkout to check the recorded results without running the model.
+
+## Recording-time MLX preview
+
+In the earlier single-preview installation on November 19, 2026, the MLX helper returned the same 87 words and
+punctuation on the 30-second project update in **371 ms** from simulated Stop
+to private clipboard readback, down from **592 ms** without a preview. All nine
+preview-ready replays across packaging and installation finished below 500 ms.
+
+| 48 kHz project update, M5 Max on AC | Pairs | Ordinary decode, median | Ready preview, median (range) | Median paired reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Signed package | 6 | 587 ms | 362 ms (352–377) | 38.0% |
+| Installed bundle | 3 | 592 ms | 371 ms (369–378) | 37.4% |
+
+**Where the time went.** A seven-run profile of the previous decoder put
+275 ms in target verification, 129 ms in prompt prefill and 91 ms in draft
+generation on the 30-second clip. Nemo now takes one snapshot of the first
+24 seconds of microphone samples while the recording continues. The packaged
+helper spent a median 455 ms generating up to 64 candidate tokens before
+Stop. Once the full audio arrives, a single model pass reads both the final
+prompt and those tokens. Nemo keeps them only if the model predicts every
+one and the sequence fits in its 512-position prefill window. A disagreement
+causes a fresh decode. In the earlier room-echo experiment that retry cost
+135 ms (683 vs 548 ms) and preserved the original transcript.
+
+**What happens if you stop early.** Stop reads the current recording’s ready
+tokens once and submits all the audio. An unfinished preview produces no
+dependency on its result. The helper checks for a waiting request between
+groups of 12 decoder layers and abandons the preview. We issued Stop at 0, 75
+and 150 ms after the helper acknowledged starting a real preview. Each final
+WAV ended at the corresponding 24.000, 24.075 or 24.150 seconds.
+
+| Interruption test | Trials | Stop to interruption observed | Stop to copied text with overlap | Exact matches to ordinary decoding of the same cutoff |
+| --- | ---: | ---: | ---: | ---: |
+| Signed package | 6 | 4–34 ms | 575–678 ms | 6/6 |
+| Installed bundle | 3 | 7–19 ms | 487–501 ms | 3/3 |
+
+**Accuracy.** We replayed all twelve frozen recordings (1–300 seconds) and
+five variants of the project update covering lower volume, ambient noise,
+room echo, trailing silence and combined changes. Their raw transcripts,
+including punctuation, matched the previous signed helper byte for byte
+after the same Rust PCM-to-WAV conversion. The 30-second reference had zero
+word errors. A second check sent the original WAVs directly through the installed
+helper with preview tokens where eligible. All 17 matched the frozen raw
+transcripts from the previous decoder. The installed CLI also returned the
+exact 30-second reference.
+
+**Measurement boundary.** A replay controller supplied saved PCM to the
+production recording-preview, WAV, backend and output code. We alternated
+the order within each timing pair, used the same resident NVFP4 model,
+eight-token draft depth and one-second GPU wakeups in both conditions, and
+waited six seconds after the 24-second mark before Stop. The timer included
+WAV conversion, local HTTP, inference, formatting, writing to a private
+macOS clipboard and reading it back. Physical microphone shutdown, the menu
+event loop and visible insertion into a foreground app require separate
+measurements. The installed executable and runtime resources matched the
+signed package. Its executable SHA-256 was
+`8cf7ea69458ce64f43c5584630e8b4d5aa571c40bae58c578a286d7cdac0cf0b`.
+
+**Why the one-second wake interval.** The earlier two-second interval performed
+well on short speech. In the preview prototype, a one-second interval put
+12/12 finished previews below the 500 ms Stop target. At two-second spacing,
+5/6 qualified. Wakeups and previews run only during recording on resident
+MLX. Short recordings skip the preview. Native nemo-speech uses its ordinary
+decoder. These trials measured latency. Energy use is unmeasured.
+
+The [illustrated guide](dictation-performance/index.html#recording-preview)
+shows the comparison. The local trial directory
+`artifacts/performance/mlx-preview-install-yAl09E/` contains the replay
+controller, `validate.py`, and per-trial JSON. From the repo root, rerun
+the post-install series with
+`uv run --no-project python artifacts/performance/mlx-preview-install-yAl09E/validate.py installed`.
+Run the [helper interruption test](../scripts/tests/test_mlx_capture.py) and
+[token verification tests](../scripts/tests/test_mtp.py) in the prepared MLX
+Python environment for model-independent regression coverage.
 
 ## Reducing warm latency below 585 ms on the 30-second project update
 
@@ -408,7 +510,7 @@ observations per gap, the second operation took a median 2.3 ms at one second,
 measurements bracket the useful interval on this laptop. They do not establish
 a hardware timeout across workloads or power modes.
 
-The resident MLX profile submits the 32-element operation every two seconds **only while the microphone is recording**. The call submits GPU work
+The initial resident MLX profile submitted the 32-element operation every two seconds **only while the microphone is recording**. The call submits GPU work
 asynchronously. The worker can accept a real job between pulses, and a failed
 wake request disables pulses for that recording. The app caps the optional
 HTTP wait at 50 ms. Leaving the recording state on Stop, Cancel or input loss
@@ -463,7 +565,7 @@ the wake interval and cancellation check is `two-seconds.log` in the same run.
 
 ### Recording-only GPU warming on nemo-speech
 
-We kept the two-second GPU wakeup specific to resident MLX. On November 19,
+In the original two-second experiment, we kept GPU wakeups specific to resident MLX. On November 19,
 2026, we tested the default `nemo-speech` Metal backend on the 128 GB M5 Max
 running macOS 26.5.2 on AC power. We looked for at least a 5% median reduction
 in Stop-to-text time, with warming faster in at least five of six pairs.

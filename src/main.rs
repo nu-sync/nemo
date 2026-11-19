@@ -188,17 +188,17 @@ enum Event {
     SettingsChanged(settings::Change),
     QuitIfIdle(mpsc::Sender<bool>),
     RecordingStarted(u64, Result<audio::Recording>),
-    RecordingFinished(u64, Result<Vec<u8>>, Instant),
+    RecordingFinished(u64, Result<Vec<u8>>, Instant, Vec<u32>),
     InputsChanged(Instant, Result<audio::Inputs>),
     Finished(u64, Result<Outcome>),
     WorkerUnloaded,
 }
 enum Job {
-    WakeRecordingGpu(Weak<()>),
+    WakeRecordingGpu(Weak<audio::RecordingPreview>),
     Prepare(Arc<AtomicBool>),
     Download(u64, Arc<AtomicBool>),
     Warm(u64, Arc<AtomicBool>),
-    Transcribe(u64, Vec<u8>, Arc<AtomicBool>, Instant),
+    Transcribe(u64, Vec<u8>, Arc<AtomicBool>, Instant, Vec<u32>),
 }
 
 enum Outcome {
@@ -243,7 +243,7 @@ enum State {
     },
     Recording {
         audio: audio::Recording,
-        _gpu_session: Option<Arc<()>>,
+        gpu_session: Option<Arc<audio::RecordingPreview>>,
         started: Instant,
         canceled: Arc<AtomicBool>,
     },
@@ -629,7 +629,7 @@ fn execute() -> Result<()> {
                     fs::metadata(&file)?.len() <= 64 * 1024 * 1024,
                     "WAV input exceeds 64 MiB"
                 );
-                let text = engines.transcribe(fs::read(&file)?, &AtomicBool::new(false))?;
+                let text = engines.transcribe(fs::read(&file)?, &AtomicBool::new(false), &[])?;
                 let text = output::format_transcript(&text, remove_trailing_period);
                 if copy || paste {
                     output::deliver(text, paste, &AtomicBool::new(false))?;
@@ -887,11 +887,12 @@ fn run(mut config: Config) -> Result<()> {
     let (jobs, receiver) = mpsc::channel();
     let proxy = event_loop.create_proxy();
     let idle_timeout = Duration::from_secs(config.idle_unload_seconds);
+    let config_preview_enabled = config.mtp_draft() > 0;
     thread::spawn(move || {
-        let mut gpu_session = Weak::<()>::new();
+        let mut gpu_session = Weak::<audio::RecordingPreview>::new();
         loop {
             let received = if gpu_session.strong_count() > 0 {
-                match receiver.recv_timeout(Duration::from_secs(2)) {
+                match receiver.recv_timeout(Duration::from_secs(1)) {
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         Ok(Job::WakeRecordingGpu(gpu_session.clone()))
                     }
@@ -908,12 +909,17 @@ fn run(mut config: Config) -> Result<()> {
                 Ok(job) => {
                     let (id, result) = match job {
                         Job::WakeRecordingGpu(session) => {
-                            gpu_session =
-                                if session.strong_count() > 0 && backend.wake_recording_gpu() {
-                                    session
-                                } else {
-                                    Weak::new()
-                                };
+                            gpu_session = if session.strong_count() > 0
+                                && backend.wake_recording_gpu()
+                            {
+                                if config_preview_enabled && let Some(recording) = session.upgrade()
+                                {
+                                    backend.start_preview(&recording);
+                                }
+                                session
+                            } else {
+                                Weak::new()
+                            };
                             continue;
                         }
                         Job::Prepare(canceled) => {
@@ -948,7 +954,7 @@ fn run(mut config: Config) -> Result<()> {
                             }
                             (id, result.map(|_| Outcome::ModelDownloaded))
                         }
-                        Job::Transcribe(id, wav, canceled, stopped) => {
+                        Job::Transcribe(id, wav, canceled, stopped, hint) => {
                             eprintln!(
                                 "{}",
                                 serde_json::json!({
@@ -959,7 +965,7 @@ fn run(mut config: Config) -> Result<()> {
                             (
                                 id,
                                 backend
-                                    .transcribe(wav, &canceled)
+                                    .transcribe(wav, &canceled, &hint)
                                     .map(|text| Outcome::Transcript(text, stopped)),
                             )
                         }
@@ -1298,12 +1304,12 @@ fn run(mut config: Config) -> Result<()> {
                                 // Leaving Recording drops the only owner on stop, cancel, or input loss.
                                 let gpu_session = (config.backend == config::Backend::MlxAudio
                                     && config.idle_unload_seconds == 0).then(|| {
-                                    let session = Arc::new(());
+                                    let session = audio.preview();
                                     let _ = jobs.send(Job::WakeRecordingGpu(Arc::downgrade(&session)));
                                     session
                                 });
                                 state = State::Recording {
-                                    _gpu_session: gpu_session,
+                                    gpu_session,
                                     audio,
                                     started: Instant::now(),
                                     canceled: canceled.clone(),
@@ -1329,7 +1335,7 @@ fn run(mut config: Config) -> Result<()> {
                 }
                 _ => None,
             },
-            TaoEvent::UserEvent(Event::RecordingFinished(id, result, stopped)) => {
+            TaoEvent::UserEvent(Event::RecordingFinished(id, result, stopped, hint)) => {
                 if state.finish_cancellation(id, Completion::Audio) {
                     set_status("Canceled");
                 }
@@ -1339,7 +1345,7 @@ fn run(mut config: Config) -> Result<()> {
                     match result {
                             Ok(wav) => {
                                 let canceled = state.audio_finalized(id).unwrap();
-                                let _ = jobs.send(Job::Transcribe(id, wav, canceled, stopped));
+                                let _ = jobs.send(Job::Transcribe(id, wav, canceled, stopped, hint));
                                 sounds.play(config.sound_pack, sounds::Cue::Stop);
                             }
                             Err(error) => {
@@ -1530,9 +1536,10 @@ fn run(mut config: Config) -> Result<()> {
                         start_recording(proxy, id, seconds, microphone);
                     }
                     State::Recording {
-                        audio, canceled, ..
+                        audio, canceled, gpu_session, ..
                     } => {
                         let stopped = Instant::now();
+                        let hint = gpu_session.and_then(|session| session.ready().cloned()).unwrap_or_default();
                         next_id += 1;
                         let id = next_id;
                         let proxy = recording_proxy.clone();
@@ -1543,7 +1550,7 @@ fn run(mut config: Config) -> Result<()> {
                                 "finalization_ms": stopped.elapsed().as_secs_f64() * 1000.0,
                                 "success": recording.is_ok(),
                             }));
-                            let _ = proxy.send_event(Event::RecordingFinished(id, recording, stopped));
+                            let _ = proxy.send_event(Event::RecordingFinished(id, recording, stopped, hint));
                         });
                         state = State::Working {
                             id,

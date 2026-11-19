@@ -90,6 +90,25 @@ class DraftTests(unittest.TestCase):
                     self.assertEqual(list(verified_tokens(model, mx.zeros((2, 1)), None, 8, limit)),
                                      expected)
 
+        with patch("nemo_mtp.propose", return_value=mx.array(7)):
+            for hint in ([1, 2, 3], [1, 6, 3], [7]):
+                with self.subTest(hint=hint):
+                    tokens = verified_tokens(model, mx.zeros((2, 1)), None, 8, 12, hint)
+                    self.assertEqual(list(tokens), [1, 2, 3, 4])
+
+        # Two prompt positions and the first matching token survive. The remaining
+        # two hint tokens must be removed from the recurrent and attention caches.
+        with patch.object(model.llm, "finish_verification", wraps=model.llm.finish_verification) as repair, \
+             patch("nemo_mtp.propose", return_value=mx.array(7)):
+            tokens = verified_tokens(model, mx.zeros((2, 1)), None, 8, 12, [1, 6, 3])
+            self.assertEqual(list(tokens), [1, 2, 3, 4])
+            self.assertEqual(repair.call_args_list[0].args[1:], (3, 2))
+
+        with patch("nemo_mtp.verified_preview", side_effect=AssertionError("preview exceeds one chunk")), \
+             patch("nemo_mtp.propose", return_value=mx.array(7)):
+            tokens = verified_tokens(model, mx.zeros((511, 1)), None, 8, 12, [1, 2])
+            self.assertEqual(list(tokens), [1, 2, 3, 4])
+
         # An early draft EOS can be rejected. Later speculative positions must
         # stay out of the target batch even though the GPU computed them.
         model.llm.backbone.verification_batches.clear()

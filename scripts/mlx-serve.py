@@ -27,6 +27,7 @@ import argparse
 import hmac
 import json
 import os
+import select
 import sys
 import tempfile
 import wave
@@ -132,14 +133,14 @@ def resample_capture(path, target_rate):
     return result
 
 
-def transcribe(path, max_tokens=2048):
+def transcribe(path, max_tokens=2048, hint=()):
     """Return the greedy ASR transcript for one request."""
     audio = resample_capture(path, Handler.model.sample_rate)
     if Handler.draft_head is not None:
         from nemo_mtp import transcribe as transcribe_with_shortlist
 
         return transcribe_with_shortlist(
-            Handler.model, audio, Handler.draft_head, Handler.draft, max_tokens
+            Handler.model, audio, Handler.draft_head, Handler.draft, max_tokens, hint
         )
     result = Handler.model.generate(
         audio,
@@ -149,6 +150,10 @@ def transcribe(path, max_tokens=2048):
         max_tokens=max_tokens,
     )
     return (result.text or "").strip()
+
+
+class PreviewInterrupted(Exception):
+    pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -177,9 +182,32 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply(404, {"error": "not found"})
 
+    def preview_checkpoint(self):
+        # A queued final request or a disconnected preview client takes priority.
+        if select.select([self.server.socket, self.connection], [], [], 0)[0]:
+            raise PreviewInterrupted
+
+    def preview(self, path):
+        from nemo_mtp import PREVIEW_TOKENS, audio_tokens
+
+        print("[mlx-serve] preview started", flush=True)
+        self.preview_checkpoint()
+        audio = resample_capture(path, self.model.sample_rate)
+        self.preview_checkpoint()
+        tokens = []
+        for token in audio_tokens(self.model, audio, self.draft_head, self.draft, 2048,
+                                  checkpoint=self.preview_checkpoint):
+            if token in self.model.config.eos_token_id:
+                break
+            tokens.append(token)
+            if len(tokens) == PREVIEW_TOKENS:
+                break
+        return {"tokens": tokens}
+
     def do_POST(self):
         wake_gpu = self.path.rstrip("/") == "/v1/gpu/wake"
-        if not wake_gpu and not self.path.rstrip("/").endswith("/v1/audio/transcriptions"):
+        preview = self.path.rstrip("/") == "/v1/audio/preview"
+        if not (wake_gpu or preview) and not self.path.rstrip("/").endswith("/v1/audio/transcriptions"):
             self.reply(404, {"error": "not found"})
             return
         offered = self.headers.get("Authorization", "")
@@ -192,18 +220,36 @@ class Handler(BaseHTTPRequestHandler):
             mx.async_eval(mx.sum(mx.square(mx.arange(32, dtype=mx.float32))))
             self.reply(200, {})
             return
-        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        hint = []
         try:
-            wav = extract_file(body, self.headers.get("Content-Type", ""))
-        except Exception as error:
-            self.reply(400, {"error": f"bad multipart: {error}"})
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 65 * 1024 * 1024:
+                raise ValueError("invalid audio size")
+            if preview and self.draft_head is None:
+                self.reply(200, {"tokens": []})
+                return
+            if self.draft_head is not None and self.headers.get("X-Nemo-Preview"):
+                from nemo_mtp import PREVIEW_TOKENS
+                hint = json.loads(self.headers["X-Nemo-Preview"])
+                vocab = self.model.llm.lm_head.weight.shape[0]
+                if (not isinstance(hint, list) or len(hint) > PREVIEW_TOKENS or
+                        any(type(t) is not int or not 0 <= t < vocab or
+                            t in self.model.config.eos_token_id for t in hint)):
+                    raise ValueError("invalid preview tokens")
+            body = self.rfile.read(size)
+            wav = body if preview else extract_file(body, self.headers.get("Content-Type", ""))
+        except (IndexError, ValueError) as error:
+            self.reply(400, {"error": str(error)})
             return
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             handle.write(wav)
             path = handle.name
         try:
-            result = transcribe(path)
-            self.reply(200, {"text": result})
+            result = self.preview(path) if preview else {"text": transcribe(path, hint=hint)}
+            self.reply(200, result)
+        except PreviewInterrupted:
+            print("[mlx-serve] preview interrupted", flush=True)
+            self.reply(200, {"tokens": []})
         except Exception as error:
             self.reply(500, {"error": f"{type(error).__name__}: {error}"})
         finally:

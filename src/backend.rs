@@ -303,6 +303,45 @@ impl Backend {
             .is_ok_and(|response| response.status().is_success())
     }
 
+    pub fn start_preview(&self, recording: &Arc<crate::audio::RecordingPreview>) {
+        let Some((index, samples, rate)) = recording.take_prefix() else {
+            return;
+        };
+        let Ok(Some(base)) = self.process.endpoint() else {
+            return;
+        };
+        let recording = Arc::downgrade(recording);
+        let client = self.client.clone();
+        let key = self.key.clone();
+        thread::spawn(move || {
+            let Ok(wav) = crate::audio::wav(&samples, rate) else {
+                return;
+            };
+            if recording.strong_count() == 0 {
+                return;
+            }
+            #[derive(Deserialize)]
+            struct Preview {
+                tokens: Vec<u32>,
+            }
+            let response = client
+                .post(format!("{base}/v1/audio/preview"))
+                .bearer_auth(key)
+                .header("content-type", "audio/wav")
+                .timeout(Duration::from_secs(3))
+                .body(wav)
+                .send()
+                .and_then(|r| r.error_for_status())
+                .and_then(|r| r.json::<Preview>());
+            if let Ok(result) = response
+                && result.tokens.len() <= 64
+                && let Some(recording) = recording.upgrade()
+            {
+                recording.publish(index, result.tokens);
+            }
+        });
+    }
+
     pub fn ready(&mut self, canceled: &AtomicBool) -> Result<bool> {
         ensure!(!canceled.load(Ordering::Acquire), "Canceled");
         if self.process.endpoint()?.is_some() {
@@ -369,7 +408,12 @@ impl Backend {
         }
     }
 
-    pub fn transcribe(&mut self, audio: Vec<u8>, canceled: &AtomicBool) -> Result<String> {
+    pub fn transcribe(
+        &mut self,
+        audio: Vec<u8>,
+        canceled: &AtomicBool,
+        hint: &[u32],
+    ) -> Result<String> {
         let started = Instant::now();
         let mut audio_seconds = None;
         let mut model_load_ms = None;
@@ -404,7 +448,7 @@ impl Backend {
             let form = multipart::Form::new()
                 .part("file", part)
                 .text("response_format", "json");
-            let response = self
+            let mut request = self
                 .client
                 .post(format!(
                     "{}/v1/audio/transcriptions",
@@ -413,9 +457,11 @@ impl Backend {
                         .context("Inference runtime is not ready")?
                 ))
                 .bearer_auth(&self.key)
-                .multipart(form)
-                .send()
-                .context("Transcription request failed")?;
+                .multipart(form);
+            if !hint.is_empty() {
+                request = request.header("X-Nemo-Preview", serde_json::to_string(hint)?);
+            }
+            let response = request.send().context("Transcription request failed")?;
             let status = response.status();
             let body = response.text()?;
             if status.is_server_error() {
@@ -689,7 +735,9 @@ mod tests {
             .unwrap();
         backend.process.mark_ready(base, &canceled).unwrap();
         assert!(backend.loaded());
-        let error = backend.transcribe(wav.into_inner(), &canceled).unwrap_err();
+        let error = backend
+            .transcribe(wav.into_inner(), &canceled, &[])
+            .unwrap_err();
         server.join().unwrap();
         assert!(error.to_string().contains("500"), "{error:#}");
         assert!(
@@ -702,7 +750,7 @@ mod tests {
     fn invalid_audio_is_rejected_before_loading_weights() {
         let mut backend = Backend::new(Config::default(), Process::default()).unwrap();
         let error = backend
-            .transcribe(vec![0; 44], &AtomicBool::new(false))
+            .transcribe(vec![0; 44], &AtomicBool::new(false), &[])
             .unwrap_err();
         assert!(error.to_string().contains("readable WAV"));
         assert!(!backend.process.running().unwrap());
@@ -719,7 +767,7 @@ mod tests {
         println!("model load: {:.3}s", started.elapsed().as_secs_f64());
         for run in 1..=3 {
             let started = Instant::now();
-            let text = backend.transcribe(audio.clone(), &canceled).unwrap();
+            let text = backend.transcribe(audio.clone(), &canceled, &[]).unwrap();
             assert_eq!(
                 text,
                 "The quick brown fox jumps over the lazy dog. This is a local speech recognition test on my laptop."

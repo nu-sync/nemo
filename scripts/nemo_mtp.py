@@ -52,8 +52,7 @@ def propose(hidden, draft, head):
     return ids[mx.argmax(hidden @ head.weight[ids].T)]
 
 
-def target_hidden(backbone, tokens, cache):
-    hidden = backbone.embeddings(tokens)
+def target_hidden(backbone, hidden, cache, checkpoint=None):
     attention_mask = create_attention_mask(hidden, cache[backbone.fa_idx])
     recurrent_mask = create_ssm_mask(hidden, cache[backbone.ssm_idx])
     states = iter(cache)
@@ -62,7 +61,11 @@ def target_hidden(backbone, tokens, cache):
         mask = attention_mask if layer.block_type == "*" else recurrent_mask
         hidden = layer(hidden, mask=mask, cache=state)
         if index % 12 == 0:
-            mx.async_eval(hidden)
+            if checkpoint is None:
+                mx.async_eval(hidden)
+            else:
+                mx.eval(hidden)
+                checkpoint()
     return backbone.norm_f(hidden)
 
 
@@ -76,27 +79,70 @@ def draft_tail(mtp, embeddings, hidden, cache):
     return experts.final_layernorm(experts(attended[:, -1:]))
 
 
-def verified_tokens(model, embeddings, draft, depth, max_tokens):
+PREVIEW_TOKENS = 64
+PREFILL_CHUNK = 512
+
+
+def verified_preview(lm, embeddings, hint):
+    cache, draft_cache = lm.make_cache(), [KVCache()]
+    for layer in cache:
+        if isinstance(layer, MambaCache):
+            layer.recording = True
+    inputs = mx.concatenate([embeddings[None], lm.backbone.embeddings(mx.array([hint]))], axis=1)
+    hidden = lm.backbone(input_embeddings=inputs, cache=cache)
+    predictions = mx.argmax(lm.lm_head(hidden[:, -(len(hint) + 1):])[0], axis=-1).tolist()
+    accepted = next((i for i, t in enumerate(hint) if t != predictions[i]), len(hint))
+    keep = len(embeddings) + accepted
+    lm.finish_verification(cache, keep, len(hint) - accepted)
+    current = predictions[accepted]
+    shifted = mx.concatenate([inputs[:, 1:keep], lm.backbone.embeddings(mx.array([[current]]))], axis=1)
+    tail = draft_tail(lm.mtp, shifted, hidden[:, :keep], draft_cache)
+    mx.eval(tail, [layer.state for layer in cache], draft_cache[0].state)
+    return (cache, draft_cache, tail, current), hint[:accepted]
+
+
+def prefill(lm, embeddings, checkpoint):
+    cache, draft_cache = lm.make_cache(), [KVCache()]
+    for start in range(0, len(embeddings), PREFILL_CHUNK):
+        end = min(start + PREFILL_CHUNK, len(embeddings))
+        inputs = embeddings[None, start:end]
+        if checkpoint is None:
+            hidden = lm.backbone(input_embeddings=inputs, cache=cache)
+        else:
+            checkpoint()
+            hidden = target_hidden(lm.backbone, inputs, cache, checkpoint)
+        shifted = embeddings[None, start + 1:end + 1]
+        if end == len(embeddings):
+            current = mx.argmax(lm.lm_head(hidden[:, -1]), axis=-1).item()
+            shifted = mx.concatenate([shifted, lm.backbone.embeddings(mx.array([[current]]))], axis=1)
+        tail = draft_tail(lm.mtp, shifted, hidden, draft_cache)
+        mx.eval(tail, [layer.state for layer in cache], draft_cache[0].state)
+    return cache, draft_cache, tail, current
+
+
+def verified_tokens(model, embeddings, draft, depth, max_tokens, hint=(), checkpoint=None):
     if max_tokens == 0:
         return
     lm = model.llm
-    cache, draft_cache = lm.make_cache(), [KVCache()]
     eos = model.config.eos_token_id
+    k = min(len(hint), PREVIEW_TOKENS, max_tokens - 1)
+    hint = list(hint[:k])
+    state = None
     with mx.stream(generation_stream):
-        for start in range(0, len(embeddings), 512):
-            end = min(start + 512, len(embeddings))
-            hidden = lm.backbone(input_embeddings=embeddings[None, start:end], cache=cache)
-            shifted = embeddings[None, start + 1:end + 1]
-            if end == len(embeddings):
-                current = mx.argmax(lm.lm_head(hidden[:, -1]), axis=-1).item()
-                shifted = mx.concatenate([shifted, lm.backbone.embeddings(mx.array([[current]]))], axis=1)
-            draft_hidden = draft_tail(lm.mtp, shifted, hidden, draft_cache)
-            mx.eval(draft_hidden, [layer.state for layer in cache], draft_cache[0].state)
-
+        if hint and len(embeddings) + k <= PREFILL_CHUNK:
+            state, hint = verified_preview(lm, embeddings, hint)
+        if state is None:
+            hint = []
+            state = prefill(lm, embeddings, checkpoint)
+    cache, draft_cache, draft_hidden, current = state
+    del state
+    yield from hint
     yield current
-    remaining = max_tokens - 1
+    remaining = max_tokens - len(hint) - 1
     while remaining and current not in eos:
         with mx.stream(generation_stream):
+            if checkpoint is not None:
+                checkpoint()
             offset = draft_cache[0].offset
             count = min(depth, remaining - 1)
             draft_tokens = []
@@ -116,7 +162,8 @@ def verified_tokens(model, embeddings, draft, depth, max_tokens):
             for layer in cache:
                 if isinstance(layer, MambaCache):
                     layer.recording = True
-            hidden = target_hidden(lm.backbone, mx.array([[current, *proposals]]), cache)
+            inputs = lm.backbone.embeddings(mx.array([[current, *proposals]]))
+            hidden = target_hidden(lm.backbone, inputs, cache, checkpoint)
             predictions = mx.argmax(lm.lm_head(hidden)[0], axis=-1).tolist()
             accepted = 0
             for proposal, prediction in zip(proposals, predictions):
@@ -136,14 +183,18 @@ def verified_tokens(model, embeddings, draft, depth, max_tokens):
         remaining -= len(output)
 
 
-def transcribe(model, audio, draft, depth, max_tokens):
+def audio_tokens(model, audio, draft, depth, max_tokens, hint=(), checkpoint=None):
     prompt = resolve_prompt("asr", None, None, None, model.config.audio_locator_tag)
     with wired_limit(model):
         _, embeddings = model._prepare_inputs(audio, prompt, None, False)
-        decoder = StreamingDetokenizer(model._tokenizer, skip_special_tokens=False)
-        for token in verified_tokens(model, embeddings, draft, depth, max_tokens):
-            if token in model.config.eos_token_id:
-                break
-            decoder.add_token(token)
-        decoder.finalize()
-        return decoder.text.strip()
+        yield from verified_tokens(model, embeddings, draft, depth, max_tokens, hint, checkpoint)
+
+
+def transcribe(model, audio, draft, depth, max_tokens, hint=()):
+    decoder = StreamingDetokenizer(model._tokenizer, skip_special_tokens=False)
+    for token in audio_tokens(model, audio, draft, depth, max_tokens, hint):
+        if token in model.config.eos_token_id:
+            break
+        decoder.add_token(token)
+    decoder.finalize()
+    return decoder.text.strip()

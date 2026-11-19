@@ -1,9 +1,12 @@
+from contextlib import closing
 import http.client
 import importlib.util
 from pathlib import Path
 import struct
 import tempfile
 import threading
+import time
+from unittest.mock import patch
 import unittest
 import wave
 
@@ -63,6 +66,46 @@ class MlxCaptureTests(unittest.TestCase):
                             response.read()
                         finally:
                             client.close()
+            finally:
+                server.shutdown()
+                thread.join()
+
+    def test_final_request_interrupts_an_active_preview(self):
+        started = threading.Event()
+
+        class Handler(serve.Handler):
+            draft_head = True
+
+            def preview(self, path):
+                started.set()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    self.preview_checkpoint()
+                    time.sleep(.005)
+                return {"tokens": [42]}
+
+        def post(path, body, headers):
+            with closing(http.client.HTTPConnection(*server.server_address, timeout=3)) as client:
+                client.request("POST", path, body, headers)
+                response = client.getresponse()
+                return response.status, response.read()
+
+        with serve.HTTPServer(("127.0.0.1", 0), Handler) as server, patch.object(
+            serve, "transcribe", return_value="finished"
+        ):
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            result = []
+            try:
+                preview = threading.Thread(target=lambda: result.append(post("/v1/audio/preview", b"wav", {})))
+                preview.start()
+                self.assertTrue(started.wait(2))
+                body = b'--x\r\nContent-Disposition: form-data; name="file"\r\n\r\nwav\r\n--x--\r\n'
+                self.assertEqual(post("/v1/audio/transcriptions", body,
+                                      {"Content-Type": "multipart/form-data; boundary=x"}),
+                                 (200, b'{"text": "finished"}'))
+                preview.join(2)
+                self.assertEqual(result, [(200, b'{"tokens": []}')])
             finally:
                 server.shutdown()
                 thread.join()

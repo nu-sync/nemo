@@ -57,6 +57,12 @@ impl Engines {
         self.demoted.is_none() && self.primary.wake_recording_gpu()
     }
 
+    pub fn start_preview(&self, recording: &Arc<crate::audio::RecordingPreview>) {
+        if self.demoted.is_none() {
+            self.primary.start_preview(recording);
+        }
+    }
+
     /// Stop the running engine, whichever one it is.
     pub fn unload(&mut self) -> bool {
         let primary = self.primary.unload();
@@ -82,18 +88,23 @@ impl Engines {
 
     /// Transcribe with the selected engine, or with the included engine when the
     /// selected one fails.
-    pub fn transcribe(&mut self, audio: Vec<u8>, canceled: &AtomicBool) -> Result<String> {
+    pub fn transcribe(
+        &mut self,
+        audio: Vec<u8>,
+        canceled: &AtomicBool,
+        hint: &[u32],
+    ) -> Result<String> {
         if self.demoted.is_some() {
-            return self.serve_fallback(|fallback| fallback.transcribe(audio, canceled));
+            return self.serve_fallback(|fallback| fallback.transcribe(audio, canceled, &[]));
         }
         // Only copy the audio when a second engine exists to try it on.
         let retry = self.fallback.is_some().then(|| audio.clone());
-        match self.primary.transcribe(audio, canceled) {
+        match self.primary.transcribe(audio, canceled, hint) {
             Ok(text) => Ok(text),
             Err(error) if retry.is_some() && self.can_fall_back(canceled, &error) => {
                 self.demote(&error);
                 let audio = retry.expect("checked above");
-                self.serve_fallback(|fallback| fallback.transcribe(audio, canceled))
+                self.serve_fallback(|fallback| fallback.transcribe(audio, canceled, &[]))
                     .with_context(|| {
                         format!(
                             "The selected engine failed ({error:#}) and the included engine failed too"

@@ -71,7 +71,7 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
 <header class="mast">
   <p class="edition">Nemo on the MacBook Pro · M5 Max · 128 GB</p>
   <h1>How Nemo turns<br> speech into text</h1>
-  <p class="intro">With the model already warm, Nemo returned all 87 words of a 30-second recording <strong>132–135 ms sooner</strong> in two sets of paired trials. A separate set of changes keeps Nemo ready when you start speaking after a pause.</p>
+  <p class="intro">Nemo starts decoding while you speak. On a seven-second recording, its updated MLX preview cut the median wait after Stop from <strong>258 to 169 ms</strong>. All 30 paired replays of four- to twenty-second dictations finished sooner and returned the same text.</p>
 </header>
 
 <nav aria-label="Figures">
@@ -79,6 +79,7 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
   <ol>
     <li><a href="#pipeline">From speech to paste</a></li>
     <li><a href="#warm">Keeping Nemo warm</a></li>
+    <li><a href="#recording-preview">Decoding while you speak</a></li>
     <li><a href="#audio">Preparing the audio</a></li>
     <li><a href="#verify">Who chooses the words?</a></li>
     <li><a href="#shortlist">The vocabulary shortlist</a></li>
@@ -98,7 +99,7 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
 <p>With the default shortcut, pressing Right Option starts recording. Nemo opens the microphone and buffers speech locally. Pressing Stop closes the recording. The worker then sends the complete audio to the MLX helper on your Mac. The helper joins the predicted tokens into a string. Nemo formats the text, copies it to the clipboard and, if enabled, sends Paste to the active app.</p>
 <figure>
 <svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="pipeline-title pipeline-desc" style="--wide-ratio:720/307; --narrow-ratio:318/649">
-<title id="pipeline-title">Four steps and three latency clocks</title><desc id="pipeline-desc">Capture speech, finish the WAV, transcribe in the MLX helper, then deliver text. Only the helper request was timed in the paired trials.</desc>
+<title id="pipeline-title">Four steps and three latency clocks</title><desc id="pipeline-desc">Capture speech, finish the WAV, transcribe in the MLX helper, then deliver text. The earlier decoder trials timed the helper request. The short-preview trials timed Stop through receipt of the transcript.</desc>
 <svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 307">
   <rect x="4" y="4" width="164.5" height="135" rx="7" fill="#fbeaf2" stroke="#903865"/>
   <text x="16" y="29" font-size="16" fill="#903865" text-anchor="start" font-weight="700">Capture speech</text>
@@ -182,7 +183,7 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
 <p>The running helper occupies about 27 GB. Starting it and loading the model took about three seconds in the final trials. The M5 Max profile starts loading in the background at launch and keeps the weights until you quit. You can start recording while it loads. A second change addresses the slower first GPU request after a quiet interval.</p>
 <figure>
 <svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="warm-title warm-desc" style="--wide-ratio:720/178; --narrow-ratio:318/407">
-<title id="warm-title">Model residency and recording-only GPU wakeups</title><desc id="warm-desc">Launch loads the weights. The worker sleeps while idle. Small GPU operations run at recording start and every two seconds until Stop or Cancel.</desc>
+<title id="warm-title">Model residency and recording-only GPU wakeups</title><desc id="warm-desc">Launch loads the weights. The worker sleeps while idle. Small GPU operations run at recording start and every second until Stop or Cancel.</desc>
 <svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 178">
   <rect x="4" y="4" width="169" height="168" rx="7" fill="#e5f2fc"/>
   <text x="16" y="28" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">Launch</text>
@@ -204,7 +205,7 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
   <text x="378" y="28" font-size="16" fill="#903865" text-anchor="start" font-weight="700">Recording</text>
   <text x="378" y="61" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Wake GPU</text>
   <text x="378" y="88" font-size="15" fill="#595954" text-anchor="start">Small GPU job at the</text>
-  <text x="378" y="108" font-size="15" fill="#595954" text-anchor="start">start, then every 2 s.</text>
+  <text x="378" y="108" font-size="15" fill="#595954" text-anchor="start">start, then every 1 s.</text>
   <line x1="381" y1="153" x2="520" y2="153" stroke="#903865" stroke-width="1"/>
   <circle cx="381" cy="153" r="4" fill="#903865"/>
   <circle cx="450.5" cy="153" r="4" fill="#903865"/>
@@ -236,7 +237,7 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
   <rect x="4" y="196" width="310" height="109" rx="7" fill="#fbeaf2"/>
   <text x="16" y="220" font-size="16" fill="#903865" text-anchor="start" font-weight="700">Recording</text>
   <text x="116" y="220" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Wake GPU</text>
-  <text x="16" y="248" font-size="15" fill="#595954" text-anchor="start">Small GPU job at the start, then every 2 s.</text>
+  <text x="16" y="248" font-size="15" fill="#595954" text-anchor="start">Small GPU job at the start, then every 1 s.</text>
   <line x1="19" y1="286" x2="299" y2="286" stroke="#903865" stroke-width="1"/>
   <circle cx="19" cy="286" r="4" fill="#903865"/>
   <circle cx="159" cy="286" r="4" fill="#903865"/>
@@ -252,8 +253,39 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
 </svg>
 <figcaption>A 100 ms silent clip occupied the helper for 325 ms in one four-pair experiment. The recording-only MLX wakeup sums 32 squared values and uses no audio. Dispatching it asynchronously leaves the worker available for the real request.</figcaption>
 </figure>
-<p class="detail"><strong>Why two seconds?</strong> With a five-second test recording, the following requests took 222, 227, 406 and 412 ms at one-, two-, three- and four-second spacing. Two seconds was the longest tested interval within 3% of one second. These measurements cover request latency. A separate test of the native nemo-speech backend found no repeatable benefit from recording-time wakeups.</p>
+<p class="detail">Two seconds between wakeups worked well on five-second dictations. With a 24-second preview, one-second spacing kept all 12 prototype replays of the 30-second clip below 500 ms. At two-second spacing, five of six finished below 500 ms. Nemo uses one second on resident MLX. Separate tests on native nemo-speech found no repeatable benefit from GPU wakeups.</p>
 <p class="source"><a href="../performance.md#keeping-the-model-ready-between-dictations">Idle and wake experiments</a> · <a href="../../src/backend.rs">Wake request</a></p>
+</article>
+
+<article id="recording-preview">
+<h2>Decode the opening while you speak</h2>
+<p>Resident MLX drafts the opening after 3 seconds and can refresh it at 6, 12 and 24 seconds. Pressing Stop sends all the audio along with the newest completed draft. The model checks up to 64 suggested tokens against the full recording. It keeps the words up to the first disagreement and continues from its own correction. Longer prompts that exceed the single verification window use ordinary decoding.</p>
+<figure>
+<svg class="chart" viewBox="0 0 352 236" role="img" aria-labelledby="preview-time-title preview-time-desc" xmlns="http://www.w3.org/2000/svg">
+<title id="preview-time-title">Less waiting after short dictations</title>
+<desc id="preview-time-desc">Median time from simulated Stop through receipt of the transcript, six pairs per duration. 4 seconds, 202 to 135 milliseconds, 5 seconds, 213 to 186 milliseconds, 7 seconds, 258 to 169 milliseconds, 10 seconds, 299 to 240 milliseconds, 20 seconds, 434 to 312 milliseconds.</desc>
+<g font-family="Arial, sans-serif" font-size="14" fill="#202020"><rect x="5" y="5" width="12" height="12" fill="#595954"/><text x="23" y="16">Previous</text><rect x="106" y="5" width="12" height="12" fill="#006b63"/><text x="124" y="16">Updated preview</text>
+<text x="4" y="52">4 s</text>
+<rect x="48" y="32" width="109" height="10" rx="2" fill="#595954"/><text x="163" y="41" font-size="13">202 ms</text>
+<rect x="48" y="48" width="73" height="10" rx="2" fill="#006b63"/><text x="127" y="57" font-size="13">135 ms</text>
+<text x="4" y="91">5 s</text>
+<rect x="48" y="71" width="115" height="10" rx="2" fill="#595954"/><text x="169" y="80" font-size="13">213 ms</text>
+<rect x="48" y="87" width="100" height="10" rx="2" fill="#006b63"/><text x="154" y="96" font-size="13">186 ms</text>
+<text x="4" y="130">7 s</text>
+<rect x="48" y="110" width="139" height="10" rx="2" fill="#595954"/><text x="193" y="119" font-size="13">258 ms</text>
+<rect x="48" y="126" width="91" height="10" rx="2" fill="#006b63"/><text x="145" y="135" font-size="13">169 ms</text>
+<text x="4" y="169">10 s</text>
+<rect x="48" y="149" width="161" height="10" rx="2" fill="#595954"/><text x="215" y="158" font-size="13">299 ms</text>
+<rect x="48" y="165" width="130" height="10" rx="2" fill="#006b63"/><text x="184" y="174" font-size="13">240 ms</text>
+<text x="4" y="208">20 s</text>
+<rect x="48" y="188" width="234" height="10" rx="2" fill="#595954"/><text x="288" y="197" font-size="13">434 ms</text>
+<rect x="48" y="204" width="168" height="10" rx="2" fill="#006b63"/><text x="222" y="213" font-size="13">312 ms</text>
+</g></svg>
+<figcaption>Each pair replayed the same saved audio on the M5 Max on AC. The timer ran from simulated Stop through receipt of the raw transcript. The previous build waited until 24 seconds to preview. On the seven-second clip the updated build spent a median 422 ms drafting during recording and saved 89 ms after Stop.</figcaption>
+</figure>
+<p class="detail"><strong>At 30 seconds,</strong> both builds had a ready draft. In three fresh pairs on battery, the previous build took a median 366 ms and the updated build took 373 ms through receipt of formatted text. Both returned the same 87-word transcript. A different seven-second recording went from 238 to 169 ms in the same series.</p>
+<p class="detail"><strong>If you stop mid-preview,</strong> the helper gives the final recording priority. At three deliberate cutoffs, the installed helper abandoned an active preview within 5–14 ms and returned the exact text for the audio captured at Stop. The replay used a simulated recording and left the microphone, clipboard and foreground app alone.</p>
+<p class="source"><a href="../performance.md#short-dictation-previews">Timing, accuracy and installation checks</a> · <a href="../performance.md#recording-time-mlx-preview">Earlier 24-second experiment</a></p>
 </article>
 
 <article id="audio">
@@ -706,7 +738,7 @@ figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 1
 
 <article id="results">
 <h2>The same recording returned sooner in every pair</h2>
-<p>We compared a copy of the app installed at the start of the experiment with the optimized build. Each transcribed the same saved 48 kHz WAV twice. We timed the second request on AC power, alternated which build went first, and repeated the six-pair experiment independently.</p>
+<p>Before adding recording previews, we compared a copy of the app installed at the start of the decoder experiment with the optimized build. Each transcribed the same saved 48 kHz WAV twice. We timed the second request on AC power, alternated which build went first, and repeated the six-pair experiment independently.</p>
 <figure>
 <svg class="chart" role="img" aria-labelledby="results-chart-title" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 367.2 224.64" xmlns="http://www.w3.org/2000/svg" version="1.1">
 <title id="results-chart-title">30-second warm request medians. First series, 684 ms prior and 552 ms optimized. Repeat, 693 and 558 ms. All twelve optimized requests were below 585 ms.</title>

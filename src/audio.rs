@@ -6,8 +6,8 @@ use cpal::{
 use std::{
     io::Cursor,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicU32, Ordering},
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
 
@@ -74,6 +74,59 @@ pub struct Recording {
     pub microphone: Microphone,
 }
 
+const PREVIEW_SECONDS: [usize; 4] = [3, 6, 12, 24];
+
+/// Only the live recording owns this result. A late preview cannot reach the next recording.
+pub struct RecordingPreview {
+    samples: Weak<Mutex<Vec<f32>>>,
+    sample_rate: u32,
+    submitted: AtomicUsize,
+    tokens: [OnceLock<Vec<u32>>; PREVIEW_SECONDS.len()],
+}
+
+impl RecordingPreview {
+    pub fn new(samples: &Arc<Mutex<Vec<f32>>>, sample_rate: u32) -> Arc<Self> {
+        Arc::new(Self {
+            samples: Arc::downgrade(samples),
+            sample_rate,
+            submitted: AtomicUsize::new(0),
+            tokens: Default::default(),
+        })
+    }
+
+    pub fn take_prefix(&self) -> Option<(usize, Vec<f32>, u32)> {
+        let submitted = self.submitted.load(Ordering::Relaxed);
+        if submitted == PREVIEW_SECONDS.len() {
+            return None;
+        }
+        let samples = self.samples.upgrade()?;
+        let samples = samples.try_lock().ok()?;
+        let rate = self.sample_rate as usize;
+        let available = PREVIEW_SECONDS.partition_point(|s| s * rate <= samples.len());
+        if available <= submitted
+            || self.submitted.fetch_max(available, Ordering::Relaxed) >= available
+        {
+            return None;
+        }
+        let index = available - 1;
+        Some((
+            index,
+            samples[..PREVIEW_SECONDS[index] * rate].to_vec(),
+            self.sample_rate,
+        ))
+    }
+
+    pub fn publish(&self, index: usize, tokens: Vec<u32>) {
+        if !tokens.is_empty() {
+            let _ = self.tokens[index].set(tokens);
+        }
+    }
+
+    pub fn ready(&self) -> Option<&Vec<u32>> {
+        self.tokens.iter().rev().find_map(OnceLock::get)
+    }
+}
+
 impl Recording {
     pub fn start(max_seconds: u64, selected: Option<&Microphone>) -> Result<Self> {
         let inputs = Inputs::current()?;
@@ -138,6 +191,10 @@ impl Recording {
             sample_rate,
             level,
         })
+    }
+
+    pub fn preview(&self) -> Arc<RecordingPreview> {
+        RecordingPreview::new(&self.samples, self.sample_rate)
     }
 
     pub fn take_level(&self) -> f32 {
@@ -353,6 +410,29 @@ mod tests {
         assert_eq!(meter.take(), 0.0);
         meter.publish(&[-2.0, 2.0]);
         assert_eq!(meter.take(), 1.0);
+    }
+
+    #[test]
+    fn recording_offers_the_latest_available_prefix_and_keeps_the_newest_result() {
+        let samples = Arc::new(Mutex::new(vec![1.0; 5]));
+        let preview = RecordingPreview::new(&samples, 2);
+        assert!(preview.take_prefix().is_none());
+        samples.lock().unwrap().push(1.0);
+        let (first, prefix, rate) = preview.take_prefix().unwrap();
+        assert_eq!((first, prefix.len(), rate), (0, 6, 2));
+        assert!(preview.take_prefix().is_none());
+        samples.lock().unwrap().resize(26, 2.0);
+        let (latest, prefix, _) = preview.take_prefix().unwrap();
+        assert_eq!((latest, prefix.len()), (2, 24));
+        preview.publish(latest, vec![3]);
+        preview.publish(first, vec![1]);
+        assert_eq!(preview.ready(), Some(&vec![3]));
+        samples.lock().unwrap().resize(50, 3.0);
+        assert_eq!(preview.take_prefix().unwrap().1.len(), 48);
+        preview.publish(3, vec![]);
+        assert_eq!(preview.ready(), Some(&vec![3]));
+        assert!(preview.take_prefix().is_none());
+        assert!(RecordingPreview::new(&samples, 2).ready().is_none());
     }
 
     #[test]
