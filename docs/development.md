@@ -188,32 +188,30 @@ Uses [NVIDIA Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVID
 
 ## Microphone selection
 
-Choose **Settings → Microphone** to use the system default or a specific input.
+Choose **Settings → Preferred mic** to use the system default or a specific input.
 Nemo saves the device ID and name in `config.toml`; an omitted `microphone` table
 uses the system default. The menu and Settings show the current input. Available
 inputs refresh every two seconds without opening a recording stream.
 
-If a saved device is unavailable, Nemo asks before using the current system default
-for one recording. Cancel leaves the microphone closed. The saved device remains
-selected and is used again when it reconnects. Disconnecting an active input stops
-and discards the recording; Nemo does not switch inputs mid-recording. With no
-usable default, recording reports an error.
+If the saved microphone is unavailable or fails to open, Nemo tries the macOS
+default automatically. The saved choice stays selected and takes priority for
+new recordings when it becomes usable again. Settings marks the preferred mic
+as disconnected and shows the fallback input. The menu shows the mic in use
+while recording. If the active mic disconnects, Nemo discards that recording. Start
+dictation again to use the fallback. If the default cannot be used, choose another
+input in **Settings → Preferred mic** or connect one and retry.
 
-To verify on macOS, select each available input and record, reopen Nemo to check
-persistence, then disconnect and reconnect the selected input. Check both Cancel
-and Use system default in the fallback prompt, confirm reconnection restores the
-saved input, and verify an active disconnect discards the recording. Check the
-empty-device case on a host with no inputs. Follow the `verify-nemo` skill for the
-acoustic transcription and paste journey; unit tests simulate device inventories.
+To verify on macOS, select a removable input, disconnect it, and start dictation
+with the system default. Reconnect it and confirm that the next recording uses
+the saved input. Unplug it during capture and check that a new recording can
+start after the interrupted one ends. Follow the `verify-nemo` skill for acoustic
+transcription and clipboard verification.
 
-For a brief hardware stream check that discards captured samples without saving
-or transcribing them:
+For a brief hardware stream check that discards captured samples:
 
 ```sh
-cargo test --locked audio::tests::real_microphone_opens_by_id_and_missing_selection_requires_confirmation -- --ignored --exact
+cargo test --locked audio::tests::real_microphone_opens_by_id_and_automatically_falls_back -- --ignored --exact
 ```
 
-This opens the current system-default input both automatically and by its saved
-ID, checks that captured samples reach the display meter, and verifies a missing device requires fallback
-confirmation before opening a stream. It does not replace the UI, physical
-unplug/reconnect, or installed-app transcription/paste checks.
+The test captures samples and checks the level meter with a simulated missing
+preference, with the system default, and with that device selected by ID.

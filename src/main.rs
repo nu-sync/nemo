@@ -187,7 +187,7 @@ enum Event {
     Action(String),
     SettingsChanged(settings::Change),
     QuitIfIdle(mpsc::Sender<bool>),
-    RecordingStarted(u64, Result<audio::Start>),
+    RecordingStarted(u64, Result<audio::Recording>),
     RecordingFinished(u64, Result<Vec<u8>>, Instant),
     InputsChanged(Instant, Result<audio::Inputs>),
     Finished(u64, Result<Outcome>),
@@ -695,7 +695,7 @@ fn start_recording(
             serde_json::json!({
                 "event": "capture_start",
                 "microphone_start_ms": requested.elapsed().as_secs_f64() * 1000.0,
-                "recording_started": matches!(&result, Ok(audio::Start::Recording(_))),
+                "recording_started": result.is_ok(),
                 "success": result.is_ok(),
             })
         );
@@ -986,16 +986,10 @@ fn run(mut config: Config) -> Result<()> {
             active,
             !matches!(state, State::Idle),
         );
-        input_item.set_text(if let Some(active) = active {
-            format!("Input: {}", active.name)
-        } else {
-            match inputs.resolve(config.microphone.as_ref()) {
-                Ok((device, false)) => format!("Input: {}", device.name),
-                Ok((_, true)) => {
-                    format!("{} unavailable", config.microphone.as_ref().unwrap().name)
-                }
-                Err(_) => "No microphone available".into(),
-            }
+        let input = active.or_else(|| inputs.resolve(config.microphone.as_ref()));
+        input_item.set_text(match input {
+            Some(device) => format!("Input: {}", device.name),
+            None => "No microphone available".into(),
         });
 
         let recording = matches!(state, State::Recording { .. });
@@ -1151,11 +1145,7 @@ fn run(mut config: Config) -> Result<()> {
                             set_status(&message);
                             output::sound("Basso");
                         }
-                        input_readiness = match observed.resolve(config.microphone.as_ref()) {
-                            Ok((_, false)) => readiness::Input::Available,
-                            Ok((_, true)) => readiness::Input::NeedsConfirmation,
-                            Err(_) => readiness::Input::Unavailable,
-                        };
+                        input_readiness = readiness::Input::from_inputs(&observed, config.microphone.as_ref());
                         inputs = observed;
                     }
                     Err(error) => {
@@ -1176,11 +1166,7 @@ fn run(mut config: Config) -> Result<()> {
                     }) {
                         Ok(_) => {
                             config.microphone = microphone;
-                            input_readiness = match inputs.resolve(config.microphone.as_ref()) {
-                                Ok((_, false)) => readiness::Input::Available,
-                                Ok((_, true)) => readiness::Input::NeedsConfirmation,
-                                Err(_) => readiness::Input::Unavailable,
-                            };
+                            input_readiness = readiness::Input::from_inputs(&inputs, config.microphone.as_ref());
                             settings.set_error("");
                         }
                         Err(error) => {
@@ -1277,7 +1263,7 @@ fn run(mut config: Config) -> Result<()> {
                     let canceled = canceled.clone();
                     state = State::Idle;
                     match result {
-                            Ok(audio::Start::Recording(audio)) => {
+                            Ok(audio) => {
                                 let canceled = canceled.clone();
                                 state = State::Recording {
                                     audio,
@@ -1286,22 +1272,6 @@ fn run(mut config: Config) -> Result<()> {
                                 };
                                 set_status("Recording");
                                 sounds.play(config.sound_pack, sounds::Cue::Start);
-                            }
-                            Ok(audio::Start::ConfirmFallback(fallback)) => {
-                                let selected = config
-                                    .microphone
-                                    .as_ref()
-                                    .map(|d| d.name.as_str())
-                                    .unwrap_or("Microphone");
-                                if settings.confirm_fallback(selected, &fallback) {
-                                    state = State::Starting { id, canceled };
-                                    let seconds = config.max_recording_seconds;
-                                    let proxy = recording_proxy.clone();
-                                    start_recording(proxy, id, seconds, Some(fallback));
-                                } else {
-                                    canceled.store(true, Ordering::Release);
-                                    set_status("Canceled");
-                                }
                             }
                             Err(error) => {
                                 canceled.store(true, Ordering::Release);

@@ -26,9 +26,9 @@ impl Guidance {
                 Some(Destination::SystemSettings(url))
             } else {
                 match blocker {
-                    Blocker::MicrophoneUnavailable
-                    | Blocker::MicrophoneConfirmation
-                    | Blocker::MicrophoneScanFailed(_) => Some(Destination::NemoSettings),
+                    Blocker::MicrophoneUnavailable | Blocker::MicrophoneScanFailed(_) => {
+                        Some(Destination::NemoSettings)
+                    }
                     Blocker::Accessibility
                     | Blocker::ShortcutUnavailable
                     | Blocker::MicrophonePermission

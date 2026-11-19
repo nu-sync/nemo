@@ -23,9 +23,47 @@ pub enum Change {
     PreviewSound(Cue),
 }
 
+#[derive(PartialEq, Eq)]
+enum MicrophoneChoice {
+    SystemDefault,
+    Connected(Microphone),
+    Disconnected(Microphone),
+}
+
+impl MicrophoneChoice {
+    fn list(inputs: &Inputs, preferred: Option<&Microphone>) -> Vec<Self> {
+        let mut choices = vec![Self::SystemDefault];
+        choices.extend(inputs.devices.iter().cloned().map(Self::Connected));
+        if let Some(preferred) = preferred
+            && !inputs
+                .devices
+                .iter()
+                .any(|device| device.id == preferred.id)
+        {
+            choices.push(Self::Disconnected(preferred.clone()));
+        }
+        choices
+    }
+
+    fn microphone(&self) -> Option<&Microphone> {
+        match self {
+            Self::SystemDefault => None,
+            Self::Connected(device) | Self::Disconnected(device) => Some(device),
+        }
+    }
+
+    fn title(&self) -> String {
+        match self {
+            Self::SystemDefault => "System default".into(),
+            Self::Connected(device) => device.name.clone(),
+            Self::Disconnected(device) => format!("{} (disconnected)", device.name),
+        }
+    }
+}
+
 struct Actions {
     on_change: Box<dyn Fn(Change)>,
-    microphones: RefCell<Vec<Option<Microphone>>>,
+    microphones: RefCell<Vec<MicrophoneChoice>>,
 }
 
 define_class!(
@@ -39,8 +77,8 @@ define_class!(
     impl SettingsAction {
         #[unsafe(method(selectMicrophone:))]
         fn select_microphone(&self, sender: &NSPopUpButton) {
-            if let Some(microphone) = self.ivars().microphones.borrow().get(sender.indexOfSelectedItem() as usize) {
-                (self.ivars().on_change)(Change::Microphone(microphone.clone()));
+            if let Some(choice) = self.ivars().microphones.borrow().get(sender.indexOfSelectedItem() as usize) {
+                (self.ivars().on_change)(Change::Microphone(choice.microphone().cloned()));
             }
         }
 
@@ -102,7 +140,7 @@ impl Settings {
         let mtm = MainThreadMarker::new().expect("Settings are created on the main thread");
         let action = SettingsAction::alloc(mtm).set_ivars(Actions {
             on_change: Box::new(on_change),
-            microphones: RefCell::new(vec![None]),
+            microphones: RefCell::default(),
         });
         let action: Retained<SettingsAction> = unsafe { msg_send![super(action), init] };
         // The target is retained for the window's lifetime and implements this selector.
@@ -190,7 +228,8 @@ impl Settings {
             NSPoint::new(322.0, 160.0),
             NSSize::new(116.0, 30.0),
         ));
-        let microphone_label = NSTextField::labelWithString(&NSString::from_str("Microphone"), mtm);
+        let microphone_label =
+            NSTextField::labelWithString(&NSString::from_str("Preferred mic"), mtm);
         microphone_label.setFrame(NSRect::new(
             NSPoint::new(24.0, 118.0),
             NSSize::new(96.0, 22.0),
@@ -250,26 +289,12 @@ impl Settings {
         active: Option<&Microphone>,
         busy: bool,
     ) {
-        let mut choices = vec![None];
-        choices.extend(inputs.devices.iter().cloned().map(Some));
-        if let Some(selected) = selected
-            && !inputs.devices.iter().any(|d| d.id == selected.id)
-        {
-            choices.push(Some(selected.clone()));
-        }
-        if self.microphone.numberOfItems() == 0
-            || *self.action.ivars().microphones.borrow() != choices
-        {
+        let choices = MicrophoneChoice::list(inputs, selected);
+        if *self.action.ivars().microphones.borrow() != choices {
             self.microphone.removeAllItems();
             let mut titles = std::collections::HashSet::new();
             for choice in &choices {
-                let title = match choice {
-                    None => "System default".to_owned(),
-                    Some(device) if !inputs.devices.iter().any(|d| d.id == device.id) => {
-                        format!("{} (unavailable)", device.name)
-                    }
-                    Some(device) => device.name.clone(),
-                };
+                let title = choice.title();
                 let mut unique = title.clone();
                 let mut suffix = 2;
                 while !titles.insert(unique.clone()) {
@@ -279,11 +304,15 @@ impl Settings {
                 self.microphone
                     .addItemWithTitle(&NSString::from_str(&unique));
             }
-            *self.action.ivars().microphones.borrow_mut() = choices.clone();
+            *self.action.ivars().microphones.borrow_mut() = choices;
         }
-        let index = choices
+        let index = self
+            .action
+            .ivars()
+            .microphones
+            .borrow()
             .iter()
-            .position(|d| d.as_ref().map(|d| &d.id) == selected.map(|d| &d.id))
+            .position(|choice| choice.microphone().map(|d| &d.id) == selected.map(|d| &d.id))
             .unwrap_or(0);
         self.microphone.selectItemAtIndex(index as isize);
         self.microphone.setEnabled(!busy);
@@ -291,30 +320,12 @@ impl Settings {
             format!("Recording: {}", active.name)
         } else {
             match inputs.resolve(selected) {
-                Ok((device, false)) => format!("Input: {}", device.name),
-                Ok((device, true)) => format!(
-                    "{} unavailable. System default: {}. Nemo will ask before recording.",
-                    selected.unwrap().name,
-                    device.name
-                ),
-                Err(error) => error.to_string(),
+                Some(device) => format!("Input: {}", device.name),
+                None => "No microphone available. Connect one or choose an input above.".into(),
             }
         };
         self.input_status
             .setStringValue(&NSString::from_str(&message));
-    }
-
-    pub fn confirm_fallback(&self, selected: &str, fallback: &Microphone) -> bool {
-        use objc2_app_kit::NSAlert;
-        let alert = NSAlert::new(MainThreadMarker::new().unwrap());
-        alert.setMessageText(&NSString::from_str(&format!("{} is unavailable", selected)));
-        alert.setInformativeText(&NSString::from_str(&format!(
-            "Record with {} for this recording? Your saved microphone will stay selected.",
-            fallback.name
-        )));
-        alert.addButtonWithTitle(&NSString::from_str("Cancel"));
-        alert.addButtonWithTitle(&NSString::from_str("Use system default"));
-        alert.runModal() == 1001
     }
 
     pub fn show(&self) {
@@ -356,5 +367,29 @@ impl Settings {
 
     pub fn set_error(&self, message: &str) {
         self.error.setStringValue(&NSString::from_str(message));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preferred_microphone_label_refreshes_when_the_last_device_disconnects_and_returns() {
+        let preferred = Microphone {
+            id: "usb".into(),
+            name: "USB microphone".into(),
+        };
+        let mut inputs = Inputs::default();
+        inputs.devices.push(preferred.clone());
+        let connected = MicrophoneChoice::list(&inputs, Some(&preferred));
+        inputs.devices.clear();
+        let disconnected = MicrophoneChoice::list(&inputs, Some(&preferred));
+        assert!(connected != disconnected);
+        assert_eq!(connected[1].title(), "USB microphone");
+        assert_eq!(disconnected[1].title(), "USB microphone (disconnected)");
+        assert_eq!(disconnected[1].microphone(), Some(&preferred));
+        inputs.devices.push(preferred.clone());
+        assert!(MicrophoneChoice::list(&inputs, Some(&preferred)) == connected);
     }
 }

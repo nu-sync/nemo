@@ -216,15 +216,29 @@ pub fn run(config: &Config, color: Color) {
     match receiver.recv_timeout(Duration::from_secs(2)) {
         Ok(Ok(inputs)) => {
             match inputs.resolve(config.microphone.as_ref()) {
-                Ok((device, false)) => {
+                Some(device) => {
+                    let fallback = config
+                        .microphone
+                        .as_ref()
+                        .is_some_and(|selected| selected.id != device.id);
+                    let source = if fallback {
+                        " (system default fallback)"
+                    } else {
+                        ""
+                    };
                     print!(
                         "{}",
-                        row(color, 32, "OK", &format!("Microphone: {}", device.name))
+                        row(
+                            color,
+                            32,
+                            "OK",
+                            &format!("Microphone: {}{source}", device.name)
+                        )
                     );
                     if permissions::Snapshot::current().microphone
                         == permissions::Microphone::Authorized
                     {
-                        match audio::probe(config.microphone.as_ref()) {
+                        match audio::probe(device) {
                             Ok(configuration) => print!(
                                 "{}",
                                 row(
@@ -258,22 +272,7 @@ pub fn run(config: &Config, color: Color) {
                         );
                     }
                 }
-                Ok((device, true)) => print!(
-                    "{}",
-                    row(
-                        color,
-                        33,
-                        "ACTION",
-                        &format!(
-                            "Saved microphone unavailable; confirm replacement: {}",
-                            device.name
-                        )
-                    )
-                ),
-                Err(error) => print!(
-                    "{}",
-                    row(color, 31, "BLOCKED", &format!("Microphone: {error}"))
-                ),
+                None => print!("{}", row(color, 31, "BLOCKED", "No microphone available")),
             }
             for device in inputs.devices {
                 println!("Input device: {} ({})", device.name, device.id);

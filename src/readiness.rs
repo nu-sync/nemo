@@ -42,9 +42,21 @@ impl Activity {
 pub enum Input {
     Checking,
     Available,
-    NeedsConfirmation,
     Unavailable,
     Failed(String),
+}
+
+impl Input {
+    pub fn from_inputs(
+        inputs: &crate::audio::Inputs,
+        selected: Option<&crate::audio::Microphone>,
+    ) -> Self {
+        if inputs.resolve(selected).is_some() {
+            Self::Available
+        } else {
+            Self::Unavailable
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,7 +68,6 @@ pub enum Blocker {
     MicrophoneNotDetermined,
     CheckingMicrophones,
     MicrophoneUnavailable,
-    MicrophoneConfirmation,
     MicrophoneScanFailed(String),
     ModelMissing,
     RuntimeMissing,
@@ -70,7 +81,6 @@ impl Blocker {
             Self::ShortcutUnavailable
             | Self::CheckingMicrophones
             | Self::MicrophoneUnavailable
-            | Self::MicrophoneConfirmation
             | Self::MicrophoneScanFailed(_)
             | Self::ModelMissing
             | Self::RuntimeMissing => None,
@@ -87,9 +97,6 @@ impl Blocker {
             }
             Self::CheckingMicrophones => "Checking microphones".into(),
             Self::MicrophoneUnavailable => "Recording blocked: no microphone available".into(),
-            Self::MicrophoneConfirmation => {
-                "Selected microphone unavailable: confirm replacement when recording".into()
-            }
             Self::MicrophoneScanFailed(error) => format!("Cannot check microphones: {error}"),
             Self::ModelMissing => "Transcription blocked: model missing".into(),
             Self::RuntimeMissing => "Transcription blocked: runtime missing".into(),
@@ -101,9 +108,7 @@ impl Blocker {
             Self::Accessibility => Some("permissions"),
             Self::MicrophonePermission | Self::MicrophoneNotDetermined => Some("microphone"),
             Self::ModelMissing => Some("download"),
-            Self::MicrophoneUnavailable
-            | Self::MicrophoneConfirmation
-            | Self::MicrophoneScanFailed(_) => Some("settings"),
+            Self::MicrophoneUnavailable | Self::MicrophoneScanFailed(_) => Some("settings"),
             Self::ShortcutUnavailable | Self::CheckingMicrophones | Self::RuntimeMissing => None,
         }
     }
@@ -125,9 +130,6 @@ impl Blocker {
             Self::CheckingMicrophones => "Wait for microphone discovery.",
             Self::MicrophoneUnavailable | Self::MicrophoneScanFailed(_) => {
                 "Connect a microphone and select it in Nemo Settings."
-            }
-            Self::MicrophoneConfirmation => {
-                "Choose Record and confirm the replacement microphone, or select another in Nemo Settings."
             }
             Self::ModelMissing => "Choose Download model in the tray.",
             Self::RuntimeMissing => "Reinstall Nemo to restore the bundled runtime.",
@@ -176,7 +178,6 @@ impl Readiness {
         match input {
             Input::Checking => blockers.push(Blocker::CheckingMicrophones),
             Input::Available => {}
-            Input::NeedsConfirmation => blockers.push(Blocker::MicrophoneConfirmation),
             Input::Unavailable => blockers.push(Blocker::MicrophoneUnavailable),
             Input::Failed(error) => blockers.push(Blocker::MicrophoneScanFailed(error.clone())),
         }

@@ -40,23 +40,11 @@ impl Inputs {
         Ok(Self { devices, default })
     }
 
-    pub fn resolve(&self, selected: Option<&Microphone>) -> Result<(&Microphone, bool)> {
-        if let Some(selected) = selected
-            && let Some(device) = self.devices.iter().find(|d| d.id == selected.id)
-        {
-            return Ok((device, false));
-        }
-        let default = self
-            .default
-            .as_ref()
-            .context("No microphone available. Connect a microphone and try again")?;
-        Ok((default, selected.is_some()))
+    pub fn resolve(&self, selected: Option<&Microphone>) -> Option<&Microphone> {
+        selected
+            .and_then(|selected| self.devices.iter().find(|d| d.id == selected.id))
+            .or(self.default.as_ref())
     }
-}
-
-pub enum Start {
-    Recording(Recording),
-    ConfirmFallback(Microphone),
 }
 
 #[derive(Default)]
@@ -87,12 +75,36 @@ pub struct Recording {
 }
 
 impl Recording {
-    pub fn start(max_seconds: u64, selected: Option<&Microphone>) -> Result<Start> {
+    pub fn start(max_seconds: u64, selected: Option<&Microphone>) -> Result<Self> {
         let inputs = Inputs::current()?;
-        let (microphone, fallback) = inputs.resolve(selected)?;
-        if fallback {
-            return Ok(Start::ConfirmFallback(microphone.clone()));
+        let microphone = inputs
+            .resolve(selected)
+            .context("No microphone available. Connect one or choose an input in Nemo Settings")?;
+        match Self::open(max_seconds, microphone) {
+            Ok(recording) => Ok(recording),
+            Err(error) => {
+                // macOS may have changed the default while the first input was opening.
+                let refreshed = Inputs::current().ok();
+                let fallback = refreshed
+                    .as_ref()
+                    .and_then(|inputs| inputs.resolve(None))
+                    .filter(|device| device.id != microphone.id);
+                if let Some(fallback) = fallback {
+                    eprintln!("Could not open {}: {error:#}", microphone.name);
+                    return Self::open(max_seconds, fallback)
+                        .with_context(|| format!("Could not open {}", fallback.name));
+                }
+                Err(error).with_context(|| {
+                    format!(
+                        "Could not open {}. Choose another input in Nemo Settings",
+                        microphone.name
+                    )
+                })
+            }
         }
+    }
+
+    fn open(max_seconds: u64, microphone: &Microphone) -> Result<Self> {
         let device = cpal::default_host()
             .device_by_id(&microphone.id.parse()?)
             .context("Microphone disconnected before recording started")?;
@@ -118,14 +130,14 @@ impl Recording {
             format => bail!("Unsupported microphone sample format: {format}"),
         };
         stream.play()?;
-        Ok(Start::Recording(Self {
+        Ok(Self {
             microphone: microphone.clone(),
             stream,
             samples,
             error,
             sample_rate,
             level,
-        }))
+        })
     }
 
     pub fn take_level(&self) -> f32 {
@@ -154,10 +166,7 @@ impl Recording {
     }
 }
 
-pub fn probe(selected: Option<&Microphone>) -> Result<String> {
-    let inputs = Inputs::current()?;
-    let (microphone, fallback) = inputs.resolve(selected)?;
-    ensure!(!fallback, "Saved microphone is unavailable");
+pub fn probe(microphone: &Microphone) -> Result<String> {
     let device = cpal::default_host()
         .device_by_id(&microphone.id.parse()?)
         .context("Microphone disconnected before its stream could be checked")?;
@@ -256,38 +265,32 @@ mod tests {
             devices: vec![second.clone(), first.clone()],
             default: Some(first),
         };
-        assert_eq!(inputs.resolve(Some(&second)).unwrap(), (&second, false));
+        assert_eq!(inputs.resolve(Some(&second)), Some(&second));
     }
 
     #[test]
-    fn disconnected_selection_requires_confirmation_and_reconnect_restores_it() {
+    fn disconnected_selection_resolves_to_default_and_reconnect_restores_it() {
         let selected = microphone("headset", "Headset");
         let built_in = microphone("built-in", "Built-in microphone");
         let mut inputs = Inputs {
             devices: vec![built_in.clone()],
             default: Some(built_in.clone()),
         };
-        assert_eq!(inputs.resolve(Some(&selected)).unwrap(), (&built_in, true));
+        assert_eq!(inputs.resolve(Some(&selected)), Some(&built_in));
         inputs.devices.push(selected.clone());
-        assert_eq!(inputs.resolve(Some(&selected)).unwrap(), (&selected, false));
-        assert_eq!(inputs.resolve(None).unwrap(), (&built_in, false));
+        assert_eq!(inputs.resolve(Some(&selected)), Some(&selected));
+        assert_eq!(inputs.resolve(None), Some(&built_in));
     }
 
     #[test]
     fn no_microphone_or_missing_default_never_selects_an_arbitrary_input() {
         let selected = microphone("headset", "Headset");
         let mut inputs = Inputs::default();
-        assert!(
-            inputs
-                .resolve(None)
-                .unwrap_err()
-                .to_string()
-                .contains("No microphone available")
-        );
-        assert!(inputs.resolve(Some(&selected)).is_err());
+        assert_eq!(inputs.resolve(None), None);
+        assert_eq!(inputs.resolve(Some(&selected)), None);
         inputs.devices.push(selected.clone());
-        assert_eq!(inputs.resolve(Some(&selected)).unwrap(), (&selected, false));
-        assert!(inputs.resolve(None).is_err());
+        assert_eq!(inputs.resolve(Some(&selected)), Some(&selected));
+        assert_eq!(inputs.resolve(None), None);
     }
 
     #[test]
@@ -298,15 +301,15 @@ mod tests {
             devices: vec![built_in.clone(), headset.clone()],
             default: Some(built_in.clone()),
         };
-        assert_eq!(inputs.resolve(None).unwrap(), (&built_in, false));
+        assert_eq!(inputs.resolve(None), Some(&built_in));
         inputs.default = Some(headset.clone());
-        assert_eq!(inputs.resolve(None).unwrap(), (&headset, false));
-        assert_eq!(inputs.resolve(Some(&built_in)).unwrap(), (&built_in, false));
+        assert_eq!(inputs.resolve(None), Some(&headset));
+        assert_eq!(inputs.resolve(Some(&built_in)), Some(&built_in));
     }
 
     #[test]
     #[ignore = "requires an available microphone and macOS microphone permission"]
-    fn real_microphone_opens_by_id_and_missing_selection_requires_confirmation() {
+    fn real_microphone_opens_by_id_and_automatically_falls_back() {
         let inputs = Inputs::current().unwrap();
         let default = inputs
             .default
@@ -316,17 +319,8 @@ mod tests {
             "coreaudio:nemo-test-disconnected-input",
             "Disconnected test input",
         );
-        match Recording::start(1, Some(&missing)).unwrap() {
-            Start::ConfirmFallback(device) => assert_eq!(&device.id, &default.id),
-            Start::Recording(_) => panic!("Missing input opened a stream without confirmation"),
-        }
-        for selection in [None, Some(default)] {
-            let recording = match Recording::start(1, selection).unwrap() {
-                Start::Recording(recording) => recording,
-                Start::ConfirmFallback(_) => {
-                    panic!("Available input unexpectedly required fallback")
-                }
-            };
+        for selection in [Some(&missing), None, Some(default)] {
+            let recording = Recording::start(1, selection).unwrap();
             assert_eq!(recording.microphone.id, default.id);
             std::thread::sleep(std::time::Duration::from_millis(400));
             assert!(recording.error().is_none(), "{:?}", recording.error());
