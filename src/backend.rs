@@ -291,6 +291,18 @@ impl Backend {
         self.process.0.lock().unwrap().retire(false)
     }
 
+    pub fn wake_recording_gpu(&self) -> bool {
+        let Ok(Some(base)) = self.process.endpoint() else {
+            return false;
+        };
+        self.client
+            .post(format!("{base}/v1/gpu/wake"))
+            .bearer_auth(&self.key)
+            .timeout(Duration::from_millis(50))
+            .send()
+            .is_ok_and(|response| response.status().is_success())
+    }
+
     pub fn ready(&mut self, canceled: &AtomicBool) -> Result<bool> {
         ensure!(!canceled.load(Ordering::Acquire), "Canceled");
         if self.process.endpoint()?.is_some() {

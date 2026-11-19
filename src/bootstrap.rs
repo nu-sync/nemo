@@ -23,6 +23,22 @@ const PAYLOAD: &[(&str, &[u8])] = &[
         "scripts/entitlements.plist",
         include_bytes!("../scripts/entitlements.plist"),
     ),
+    (
+        "scripts/mlx-serve.py",
+        include_bytes!("../scripts/mlx-serve.py"),
+    ),
+    (
+        "scripts/mlx-serve.py.lock",
+        include_bytes!("../scripts/mlx-serve.py.lock"),
+    ),
+    (
+        "scripts/mlx-runner.sh",
+        include_bytes!("../scripts/mlx-runner.sh"),
+    ),
+    (
+        "scripts/nemo_mtp.py",
+        include_bytes!("../scripts/nemo_mtp.py"),
+    ),
     ("LICENSE", include_bytes!("../LICENSE")),
     ("models/LICENSE", include_bytes!("../models/LICENSE")),
     (
@@ -409,6 +425,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write_payload(root.path()).unwrap();
         write_payload(root.path()).unwrap();
+        assert_eq!(
+            nemo_build::runtime_sha256(root.path()).unwrap(),
+            nemo_build::runtime_sha256(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
+        );
         for (name, bytes) in PAYLOAD {
             assert_eq!(fs::read(root.path().join(name)).unwrap(), *bytes);
         }

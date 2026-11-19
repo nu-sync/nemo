@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize Nemo Inference"
+  short_description: "Tune MacBook dictation latency with silent A/B runs"
+  default_prompt: "Use $optimize-nemo-inference to profile Nemo on the reference MacBook and test a faster build with identical transcripts."

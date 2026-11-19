@@ -39,13 +39,20 @@ pub fn sha256(path: &Path) -> Result<String> {
     }
 }
 
+const RUNTIME_FILES: &[&str] = &[
+    "mlx-serve.py",
+    "mlx-serve.py.lock",
+    "mlx-runner.sh",
+    "nemo_mtp.py",
+];
+
 /// Hash the helper files packaged into `Contents/Resources/runtime`.
 ///
 /// Installers compare this alongside the executable so a helper-only change is not
 /// mistaken for an already-current installation.
 pub fn runtime_sha256(root: &Path) -> Result<String> {
     let mut digest = Sha256::new();
-    for name in ["mlx-serve.py", "mlx-serve.py.lock", "mlx-runner.sh"] {
+    for &name in RUNTIME_FILES {
         let path = root.join("scripts").join(name);
         let bytes =
             std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;

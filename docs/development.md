@@ -72,7 +72,9 @@ Migration verifies every SHA-256 first, publishes the managed files, and updates
 
 Combinations such as `Control+Shift+Space` are also supported as the `hotkey` value.
 
-For a latency-focused configuration on a Mac with ample unified memory, use `idle_unload_seconds = 300`. Model loading overlaps recording; `preload_model = false` and `model_warmup = false` avoid unnecessary startup work. The loaded model uses about 20 GB of memory with the bundled engine. `backend` selects the engine (`nemo-speech` or `mlx-audio`); leave it out to use `mlx-audio` when it is [set up](mlx-audio-setup.md) and `nemo-speech` otherwise. `mtp_draft_tokens` (0–8) applies to `mlx-audio` only. `inference_threads = 0` selects the runtime default (eight on this laptop); `encoder_batch_size` accepts 1–16. See [performance measurements and profiling](performance.md) before tuning these settings.
+For a Mac with enough unified memory to dedicate to dictation, set `idle_unload_seconds = 0` and `preload_model = true`. Nemo loads the model once in the background at launch and leaves recording available during loading. Between dictations the worker sleeps. While the microphone is recording, the resident MLX profile submits a small GPU operation every two seconds to reduce the wait after Stop. Stopping or canceling the recording ends these submissions. The MLX engine occupies about 27 GB on the 128 GB M5 Max. To release that memory after five idle minutes, use `idle_unload_seconds = 300`. With `preload_model = false`, the first recording starts the load.
+
+`backend` selects the engine (`nemo-speech` or `mlx-audio`); leave it out to use `mlx-audio` when it is [set up](mlx-audio-setup.md) and `nemo-speech` otherwise. `mtp_draft_tokens` (0–8) applies to `mlx-audio` only. `inference_threads = 0` selects the runtime default (eight on this laptop); `encoder_batch_size` accepts 1–16. See [performance measurements and profiling](performance.md) before tuning these settings.
 
 ## CLI
 

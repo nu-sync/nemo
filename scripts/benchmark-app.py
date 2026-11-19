@@ -325,6 +325,10 @@ def main():
     wav_directory.mkdir()
     wavs = prepare_audio(args.corpus, fixtures, wav_directory)
     runtime = args.nemo.parent.parent / "Resources/runtime"
+    payload = [args.nemo, runtime / "nemo-speech", runtime / "mlx-serve.py",
+               runtime / "mlx-serve.py.lock", runtime / "mlx-runner.sh"]
+    if (runtime / "nemo_mtp.py").is_file():
+        payload.append(runtime / "nemo_mtp.py")
     report = {
         "schema_version": 1, "state": "running", "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
@@ -334,9 +338,7 @@ def main():
                     "macos": platform.mac_ver()[0], "gpu": gpu_info(),
                     "power": command_output("/usr/bin/pmset", "-g", "batt"),
                     "power_settings": command_output("/usr/bin/pmset", "-g")},
-        "artifacts": {str(path.relative_to(args.nemo.parent.parent)): sha256(path) for path in
-                      [args.nemo, runtime / "nemo-speech", runtime / "mlx-serve.py",
-                       runtime / "mlx-serve.py.lock", runtime / "mlx-runner.sh"]},
+        "artifacts": {str(path.relative_to(args.nemo.parent.parent)): sha256(path) for path in payload},
         "corpus": {"fixtures": [fixture["id"] for fixture in fixtures], "manifest_sha256": sha256(args.corpus / "manifest.json")},
         "configs": {engine: write_config(args, engine).read_text() for engine in ENGINES},
         "identities": {}, "daemon": [], "failures": [], "records": [], "warm_processes": [],

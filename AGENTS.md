@@ -37,6 +37,8 @@ Use `cargo fmt` and keep `cargo clippy --workspace --all-targets --locked -- -D 
 
 ## Testing Guidelines
 
+For MacBook inference tuning, use [optimize-nemo-inference](.agents/skills/optimize-nemo-inference/SKILL.md). Replay frozen audio silently and compare exact transcripts on the reference M5 Max.
+
 Use Rust `#[test]` and Python `unittest`; name tests after observable behavior (`fresh_configuration_works_outside_the_checkout`, `test_*`). Add regression coverage for changed behavior. No numeric coverage threshold is configured. Run `cargo xtask check` before review. For dictation changes, follow `.agents/skills/verify-nemo/SKILL.md` to verify real recording, transcription, paste, and unloading.
 
 ## Commit & Pull Request Guidelines

@@ -53,6 +53,10 @@ impl Engines {
         self.primary.loaded()
     }
 
+    pub fn wake_recording_gpu(&self) -> bool {
+        self.demoted.is_none() && self.primary.wake_recording_gpu()
+    }
+
     /// Stop the running engine, whichever one it is.
     pub fn unload(&mut self) -> bool {
         let primary = self.primary.unload();

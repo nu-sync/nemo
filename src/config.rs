@@ -61,6 +61,7 @@ pub struct Config {
     /// Tokens the MLX engine drafts per verification step. 0 disables speculation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtp_draft_tokens: Option<u8>,
+    /// Zero keeps a loaded engine resident until shutdown or an explicit unload.
     pub idle_unload_seconds: u64,
     #[serde(skip_serializing_if = "is_default")]
     pub preload_model: bool,
@@ -174,10 +175,6 @@ impl Config {
         ensure!(
             (1..=300).contains(&self.max_recording_seconds),
             "max_recording_seconds must be 1–300"
-        );
-        ensure!(
-            self.idle_unload_seconds > 0,
-            "idle_unload_seconds must be positive"
         );
         ensure!(
             self.inference_threads <= 256,
@@ -381,17 +378,14 @@ mod tests {
     }
 
     #[test]
+    fn zero_idle_timeout_allows_resident_inference() {
+        let config: Config = toml::from_str("idle_unload_seconds = 0").unwrap();
+        assert_eq!(config.idle_unload_seconds, 0);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn invalid_inference_tuning_is_rejected() {
-        assert!(
-            Config {
-                idle_unload_seconds: 0,
-                ..Config::default()
-            }
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("idle_unload_seconds")
-        );
         for threads in [257, u32::MAX] {
             let config = Config {
                 inference_threads: threads,

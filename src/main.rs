@@ -29,7 +29,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -194,6 +194,7 @@ enum Event {
     WorkerUnloaded,
 }
 enum Job {
+    WakeRecordingGpu(Weak<()>),
     Prepare(Arc<AtomicBool>),
     Download(u64, Arc<AtomicBool>),
     Warm(u64, Arc<AtomicBool>),
@@ -242,6 +243,7 @@ enum State {
     },
     Recording {
         audio: audio::Recording,
+        _gpu_session: Option<Arc<()>>,
         started: Instant,
         canceled: Arc<AtomicBool>,
     },
@@ -675,7 +677,11 @@ fn startup_action(
     if bundled && config.model == managed_model && !managed_ready {
         Some("download")
     } else if config.preload_model && config.check_assets().is_ok() {
-        Some("warm")
+        Some(if config.idle_unload_seconds == 0 {
+            "prepare"
+        } else {
+            "warm"
+        })
     } else {
         None
     }
@@ -882,8 +888,16 @@ fn run(mut config: Config) -> Result<()> {
     let proxy = event_loop.create_proxy();
     let idle_timeout = Duration::from_secs(config.idle_unload_seconds);
     thread::spawn(move || {
+        let mut gpu_session = Weak::<()>::new();
         loop {
-            let received = if backend.loaded() {
+            let received = if gpu_session.strong_count() > 0 {
+                match receiver.recv_timeout(Duration::from_secs(2)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        Ok(Job::WakeRecordingGpu(gpu_session.clone()))
+                    }
+                    other => other,
+                }
+            } else if !idle_timeout.is_zero() && backend.loaded() {
                 receiver.recv_timeout(idle_timeout)
             } else {
                 receiver
@@ -893,6 +907,15 @@ fn run(mut config: Config) -> Result<()> {
             match received {
                 Ok(job) => {
                     let (id, result) = match job {
+                        Job::WakeRecordingGpu(session) => {
+                            gpu_session =
+                                if session.strong_count() > 0 && backend.wake_recording_gpu() {
+                                    session
+                                } else {
+                                    Weak::new()
+                                };
+                            continue;
+                        }
                         Job::Prepare(canceled) => {
                             if let Err(error) = backend.ready(&canceled) {
                                 eprintln!("Model preparation failed: {error:#}");
@@ -1065,15 +1088,21 @@ fn run(mut config: Config) -> Result<()> {
             }
         };
     let store = model::Store::managed();
-    if let Some(action) = startup_action(
+    match startup_action(
         &config,
         bootstrap::bundled(),
         &store.decoder(),
         store.ready(),
     ) {
-        let _ = event_loop
-            .create_proxy()
-            .send_event(Event::Action(action.into()));
+        Some("prepare") => {
+            let _ = jobs.send(Job::Prepare(Arc::new(AtomicBool::new(false))));
+        }
+        Some(action) => {
+            let _ = event_loop
+                .create_proxy()
+                .send_event(Event::Action(action.into()));
+        }
+        None => {}
     }
     event_loop.run(move |event, _, flow| {
         let _keep_alive = (&server, &hotkeys);
@@ -1132,6 +1161,7 @@ fn run(mut config: Config) -> Result<()> {
                             audio,
                             started,
                             canceled,
+                            ..
                         } = &state
                             && scanned_at >= *started
                             && !observed.devices.iter().any(|d| d.id == audio.microphone.id)
@@ -1265,7 +1295,15 @@ fn run(mut config: Config) -> Result<()> {
                     match result {
                             Ok(audio) => {
                                 let canceled = canceled.clone();
+                                // Leaving Recording drops the only owner on stop, cancel, or input loss.
+                                let gpu_session = (config.backend == config::Backend::MlxAudio
+                                    && config.idle_unload_seconds == 0).then(|| {
+                                    let session = Arc::new(());
+                                    let _ = jobs.send(Job::WakeRecordingGpu(Arc::downgrade(&session)));
+                                    session
+                                });
                                 state = State::Recording {
+                                    _gpu_session: gpu_session,
                                     audio,
                                     started: Instant::now(),
                                     canceled: canceled.clone(),
@@ -1711,6 +1749,14 @@ mod startup_tests {
         assert_eq!(
             startup_action(&config, true, &config.model, true),
             Some("warm")
+        );
+        let resident = Config {
+            idle_unload_seconds: 0,
+            ..config
+        };
+        assert_eq!(
+            startup_action(&resident, true, &resident.model, true),
+            Some("prepare")
         );
     }
 

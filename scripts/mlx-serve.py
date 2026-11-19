@@ -29,6 +29,8 @@ import json
 import os
 import sys
 import tempfile
+import wave
+from functools import cache
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -80,21 +82,80 @@ def extract_file(body: bytes, content_type: str):
     raise ValueError("no file part")
 
 
+# Pinned MLX-Audio Kaiser FIR parameters for 48 kHz to 16 kHz.
+FILTER_RADIUS = 64 * 3
+FFT_SIZE = 8192
+
+
+@cache
+def capture_filter_spectrum():
+    import numpy as np
+
+    offsets = np.arange(-FILTER_RADIUS, FILTER_RADIUS + 1)
+    taps = np.sinc(offsets * (0.9475937167399596 / 3))
+    taps *= np.kaiser(taps.size, 14.769656459379492)
+    return np.fft.rfft(taps / taps.sum(), n=FFT_SIZE)
+
+
+def resample_capture(path, target_rate):
+    if target_rate != 16000:
+        return path
+
+    try:
+        with wave.open(path, "rb") as audio:
+            if (audio.getframerate(), audio.getnchannels(), audio.getsampwidth()) != (48000, 1, 2):
+                return path
+            frames = audio.getnframes()
+            if not 0 < frames <= os.path.getsize(path) // 2:
+                return path
+            pcm = audio.readframes(frames)
+    except (EOFError, wave.Error):
+        return path
+    if len(pcm) != frames * 2:
+        return path
+
+    import numpy as np
+
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64) / 32768.0
+    padded = np.pad(samples, FILTER_RADIUS, mode="edge")
+    spectrum = capture_filter_spectrum()
+    overlap = 2 * FILTER_RADIUS
+    # Each overlap-save block advances a multiple of three input frames so
+    # the decimation phase stays continuous across block boundaries.
+    step = (FFT_SIZE - overlap) // 3 * 3
+    result = np.empty((frames + 2) // 3, dtype=np.float32)
+    for start in range(0, frames, step):
+        block = np.fft.rfft(padded[start:start + FFT_SIZE], n=FFT_SIZE)
+        filtered = np.fft.irfft(block * spectrum)
+        output = result[start // 3:(start + step) // 3]
+        output[:] = filtered[overlap:overlap + 3 * output.size:3]
+    return result
+
+
 def transcribe(path, max_tokens=2048):
-    """Greedy decoding: speculation is only exact at temperature 0."""
-    return Handler.model.generate(
-        path,
+    """Return the greedy ASR transcript for one request."""
+    audio = resample_capture(path, Handler.model.sample_rate)
+    if Handler.draft_head is not None:
+        from nemo_mtp import transcribe as transcribe_with_shortlist
+
+        return transcribe_with_shortlist(
+            Handler.model, audio, Handler.draft_head, Handler.draft, max_tokens
+        )
+    result = Handler.model.generate(
+        audio,
         speculative=Handler.draft > 0,
         num_draft_tokens=Handler.draft or 1,
         temperature=0,
         max_tokens=max_tokens,
     )
+    return (result.text or "").strip()
 
 
 class Handler(BaseHTTPRequestHandler):
     model = None
     key = ""
     draft = MAX_DRAFT
+    draft_head = None
 
     def log_message(self, *a):
         pass
@@ -117,12 +178,19 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self.path.rstrip("/").endswith("/v1/audio/transcriptions"):
+        wake_gpu = self.path.rstrip("/") == "/v1/gpu/wake"
+        if not wake_gpu and not self.path.rstrip("/").endswith("/v1/audio/transcriptions"):
             self.reply(404, {"error": "not found"})
             return
         offered = self.headers.get("Authorization", "")
         if self.key and not hmac.compare_digest(offered, f"Bearer {self.key}"):
             self.reply(401, {"error": "unauthorized"})
+            return
+        if wake_gpu:
+            import mlx.core as mx
+
+            mx.async_eval(mx.sum(mx.square(mx.arange(32, dtype=mx.float32))))
+            self.reply(200, {})
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         try:
@@ -135,7 +203,7 @@ class Handler(BaseHTTPRequestHandler):
             path = handle.name
         try:
             result = transcribe(path)
-            self.reply(200, {"text": (result.text or "").strip()})
+            self.reply(200, {"text": result})
         except Exception as error:
             self.reply(500, {"error": f"{type(error).__name__}: {error}"})
         finally:
@@ -143,6 +211,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # The runtime directory is part of a signed app bundle.
+    sys.dont_write_bytecode = True
     args = parse(sys.argv[1:])
     from mlx_audio.stt import load
 
@@ -158,9 +228,12 @@ def main():
     Handler.draft = args.mtp_draft
     Handler.key = args.api_key
     Handler.model = load(str(path), strict=True)
+    if Handler.draft:
+        from nemo_mtp import prepare_draft_head
+
+        Handler.draft_head = prepare_draft_head(Handler.model)
     if WARMUP:
         # pay Metal kernel compilation on a throwaway request, not the user's first
-        import wave
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             probe = handle.name
         try:
@@ -170,9 +243,11 @@ def main():
             transcribe(probe, max_tokens=32)
         finally:
             os.unlink(probe)
-    server = HTTPServer((args.host, args.port), Handler)
-    print(f"HTTP API listening on http://{args.host}:{args.port}", flush=True)
-    server.serve_forever()
+    with HTTPServer((args.host, args.port), Handler) as server:
+        print(f"HTTP API listening on http://{args.host}:{args.port}", flush=True)
+        # Nemo stops this process directly. Block on the socket between requests.
+        while True:
+            server.handle_request()
 
 
 if __name__ == "__main__":

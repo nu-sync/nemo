@@ -84,7 +84,7 @@ pub fn build(options: &Options) -> Result<PathBuf> {
     let contents = app.join("Contents");
     let runtime = contents.join("Resources/runtime");
     fs::create_dir_all(&runtime)?;
-    for name in ["mlx-serve.py", "mlx-serve.py.lock", "mlx-runner.sh"] {
+    for &name in crate::RUNTIME_FILES {
         let source = options.root.join("scripts").join(name);
         let destination = runtime.join(name);
         fs::copy(&source, &destination)
@@ -276,6 +276,7 @@ mod tests {
             ("scripts/entitlements.plist", b"<?xml version=\"1.0\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict/></plist>"),
             ("scripts/mlx-serve.py", b"print('helper')"),
             ("scripts/mlx-serve.py.lock", b"lock"),
+            ("scripts/nemo_mtp.py", b"pass"),
             ("scripts/mlx-runner.sh", b"#!/bin/sh\nexec python3\n"),
         ] {
             let path = root.path().join(path);
@@ -309,7 +310,7 @@ mod tests {
         assert_eq!(receipt["version"], "9.8.7");
         crate::install::verify(&output).unwrap();
         let runtime = output.join("Contents/Resources/runtime");
-        for name in ["mlx-serve.py", "mlx-serve.py.lock", "mlx-runner.sh"] {
+        for &name in crate::RUNTIME_FILES {
             assert!(runtime.join(name).is_file(), "missing bundled {name}");
         }
         assert_ne!(
