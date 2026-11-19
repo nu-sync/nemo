@@ -44,6 +44,8 @@ Two pairs per cutoff used a shortened replay of the earlier recording ticks. For
 
 Local evidence and replay scripts are in `artifacts/performance/short-swarm-FJyPvH/`. The AC observations are in `bounded/confirm-full-4-5-7-10-20.jsonl`, exact transcript checks in `bounded/accuracy-full.jsonl`, the installed corpus comparison in `resume-corpus.jsonl`, and the complete on-battery pairs and post-install cutoff observations in `resume-qualify.jsonl` and `resume-installed.jsonl`. Run `uv run --no-project python artifacts/performance/short-swarm-FJyPvH/resume-gates.py --gate --installed` from the checkout to check the recorded results without running the model.
 
+**Follow-up battery experiments.** None of three experiments met the repeatable 5% short-dictation target. Reusing overlap-safe resampling would save 1.74 ms on the held-out seven-second clip, where the entire resampling stage took 2.23 ms. Skipping terminal draft-cache work saved 1.83 ms in the compressed paired screen on that clip. The independent elapsed replay instead ran 2.77 ms slower by paired median. Its 30-second median was 364 ms versus 359 ms for the installed control, and all 23 raw and formatted transcripts matched. Trimming the second preview to a pause reduced helper busy time by 9.74 ms on a separate seven-second clip, but added 4.66 ms after Stop. The two active previews in that test yielded within 4 ms. The protocol, exact patches and replay commands are in `artifacts/performance/short-round-MlJ26o/REPORT.md`.
+
 ## Recording-time MLX preview
 
 In the earlier single-preview installation on November 19, 2026, the MLX helper returned the same 87 words and
