@@ -301,7 +301,8 @@ def main():
         report["configuration"] = {key: config.get(key) for key in
                                    ("idle_unload_seconds", "max_recording_seconds", "paste",
                                     "preload_model", "inference_threads", "encoder_batch_size", "model_warmup")}
-        assert config["idle_unload_seconds"] == 300, "Installed configuration must use a 300-second timeout"
+        if not args.roundtrip_only:
+            assert config["idle_unload_seconds"] == 300, "Installed configuration must use a 300-second timeout"
         assert config["max_recording_seconds"] >= 90, "Test needs at least a 90-second capture limit"
         runtime = Path(config["runtime"]).resolve()
         report["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()

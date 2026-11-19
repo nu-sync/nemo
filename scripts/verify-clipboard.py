@@ -29,10 +29,14 @@ def main():
                             'paste = false', original.decode(), count=1)
     if count != 1 or tomllib.loads(config).get('paste') is not False:
         raise RuntimeError('Cannot locate the top-level paste preference')
+    # This journey starts cold, including when the normal app preloads at launch.
+    config = re.sub(r'(?m)^preload_model\s*=\s*true\b', 'preload_model = false', config)
     output.mkdir(parents=True, exist_ok=False)
     data = output / 'data'
     data.mkdir()
     (data / 'config.toml').write_text(config)
+    if tomllib.loads(config).get('backend') == 'mlx-audio':
+        (data / 'models').symlink_to(source / 'models', target_is_directory=True)
     normal_env = {**os.environ, 'NEMO_DATA_DIR': str(source), 'NEMO_APP_PATH': str(app)}
     test_env = {**normal_env, 'NEMO_DATA_DIR': str(data)}
     was_running = subprocess.run([str(binary), 'status'], env=normal_env,

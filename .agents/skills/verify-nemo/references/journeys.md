@@ -43,8 +43,10 @@ with socket.socket(socket.AF_UNIX) as stream:
 PY
 ```
 
-The installed verifier requires `idle_unload_seconds=300`, at least a 90-second
-recording limit, and daemon permissions `accessibility=true`,
+The full five-minute expiry check requires `idle_unload_seconds=300`. Acoustic
+round trips also work with resident mode. The isolated clipboard check disables
+launch preloading for its cold-start journey. The installed verifier requires at
+least a 90-second recording limit and daemon permissions `accessibility=true`,
 `microphone="authorized"`. Preserve a different user preference and report that
 this specific helper's prerequisites are missing instead of changing it silently.
 A busy app is not available for a controlled round trip.

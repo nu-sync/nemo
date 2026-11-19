@@ -4,11 +4,16 @@ description: Verify Nemo dictation on a MacBook using real speaker playback and 
 ---
 # Verify Nemo on a MacBook
 
-Exercise the physical audio path: play known speech through the laptop speakers,
-let the installed Nemo app record it through the laptop microphone, stop recording,
-and compare the clipboard with the expected words. This is the default end-to-end
-acceptance criterion; no editor or foreground UI check is required. A
-file-transcription command does not exercise this physical path.
+On the maintainer's MacBook, run verification silently so dictation and other
+work can continue. Pass frozen audio files to `nemo transcribe --json` with an
+isolated data directory. For actual Stop-to-dispatch timing, read delivery
+events from ordinary user-initiated dictation with `scripts/latency-report.py`.
+Keep file-request timing and observed delivery timing separate. Leave audio
+playback, test microphone capture, the clipboard and the foreground app alone.
+
+On a dedicated acoustic test machine, the physical journey below plays a
+known phrase, records it and checks the clipboard after Stop. Use it when
+speaker playback is explicitly requested on that machine.
 
 Work from the repository root. Choose the requested journeys from the
 [feature and journey index](references/journeys.md); run only the needed checks.
