@@ -1,0 +1,1165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>How Nemo turns speech into text</title>
+<style>
+:root {
+  color-scheme: only light;
+  --ink: #202020;
+  --muted: #595954;
+  --paper: #ffffff;
+  --ground: #f7f7f5;
+  --line: #d6d6ce;
+  --link: #075e98;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--ground);
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+main, .mast, nav { width: min(100% - 64px, 790px); margin-inline: auto; }
+.mast { padding: 54px 0 16px; }
+.edition, .source { font: .82rem/1.55 ui-monospace, "SFMono-Regular", monospace; }
+.edition { margin: 0; color: #006b63; font-weight: 600; }
+h1, h2 { font-family: Baskerville, "Iowan Old Style", Georgia, serif; font-weight: 500; text-wrap: balance; letter-spacing: -.032em; }
+h1 { font-size: clamp(3rem, 6.4vw, 5.2rem); line-height: .98; margin: .24em 0; }
+h2 { font-size: clamp(2rem, 4.1vw, 2.85rem); line-height: 1.06; margin: 0 0 14px; }
+p, .nextlist { font-size: 1.05rem; line-height: 1.58; margin: .7em 0; }
+.intro { font-size: 1.16rem; max-width: 68ch; }
+nav { border-top: 1px solid var(--line); }
+nav summary { font-size: .96rem; font-weight: 650; cursor: pointer; padding: 13px 0; }
+nav ol { margin: 0 0 15px; padding-left: 1.7em; }
+nav a { display: inline-block; padding: 6px 2px; }
+a { color: var(--link); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+a:focus-visible, summary:focus-visible { outline: 3px solid #b43d08; outline-offset: 3px; }
+article { padding: 32px 0 34px; border-top: 1px solid #abab9f; scroll-margin-top: 14px; }
+figure { margin: 20px 0 10px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 21px; }
+figure > svg { display: block; margin: auto; width: 100%; height: auto; }
+.diagram { aspect-ratio: var(--wide-ratio); font-family: Arial, sans-serif; }
+.diagram > .narrow { display: none; }
+.chart { max-width: 526px; }
+figcaption { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 13px; font-size: .96rem; line-height: 1.55; }
+.detail, .nextlist { font-size: .96rem; }
+.nextlist { padding-left: 1.4em; }
+.nextlist b { display: block; }
+.nextlist li + li { margin-top: 8px; }
+.source { margin: 12px 0 0; color: var(--muted); }
+.source a { display: inline-block; }
+@media (max-width: 680px) {
+  main, .mast, nav { width: min(100% - 32px, 550px); }
+  .mast { padding: 32px 0 14px; }
+  .intro { font-size: 1.04rem; }
+  article { padding: 25px 0; }
+  figure { padding: 12px; }
+  .diagram { aspect-ratio: var(--narrow-ratio); max-width: 390px; }
+  .diagram > .narrow { display: block; }
+  .diagram > .wide { display: none; }
+  .source { font-size: .8rem; }
+}
+@media print {
+  :root { background: white; }
+  nav { display: none; }
+  article { break-inside: avoid; }
+  figure { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<header class="mast">
+  <p class="edition">Nemo on the MacBook Pro · M5 Max · 128 GB</p>
+  <h1>How Nemo turns<br> speech into text</h1>
+  <p class="intro">With the model already warm, Nemo returned all 87 words of a 30-second recording <strong>132–135 ms sooner</strong> in two sets of paired trials. A separate set of changes keeps Nemo ready when you start speaking after a pause.</p>
+</header>
+
+<nav aria-label="Figures">
+  <details><summary>Browse the figures</summary>
+  <ol>
+    <li><a href="#pipeline">From speech to paste</a></li>
+    <li><a href="#warm">Keeping Nemo warm</a></li>
+    <li><a href="#audio">Preparing the audio</a></li>
+    <li><a href="#verify">Who chooses the words?</a></li>
+    <li><a href="#shortlist">The vocabulary shortlist</a></li>
+    <li><a href="#readback">Fewer trips to the CPU</a></li>
+    <li><a href="#layers">Scheduling the verifier</a></li>
+    <li><a href="#tail">Discarded draft work</a></li>
+    <li><a href="#results">Speed and accuracy</a></li>
+    <li><a href="#experiments">The ideas we set aside</a></li>
+    <li><a href="#next">Where to look next</a></li>
+  </ol></details>
+</nav>
+
+<main>
+
+<article id="pipeline">
+<h2>From speech to paste</h2>
+<p>With the default shortcut, pressing Right Option starts recording. Nemo opens the microphone and buffers speech locally. Pressing Stop closes the recording. The worker then sends the complete audio to the MLX helper on your Mac. The helper joins the predicted tokens into a string. Nemo formats the text, copies it to the clipboard and, if enabled, sends Paste to the active app.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="pipeline-title pipeline-desc" style="--wide-ratio:720/307; --narrow-ratio:318/649">
+<title id="pipeline-title">Four steps and three latency clocks</title><desc id="pipeline-desc">Capture speech, finish the WAV, transcribe in the MLX helper, then deliver text. Only the helper request was timed in the paired trials.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 307">
+  <rect x="4" y="4" width="164.5" height="135" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="16" y="29" font-size="16" fill="#903865" text-anchor="start" font-weight="700">Capture speech</text>
+  <text x="16" y="54" font-size="15" fill="#202020" text-anchor="start">Microphone →</text>
+  <text x="16" y="74" font-size="15" fill="#202020" text-anchor="start">mono samples</text>
+  <line x1="170.5" y1="71.5" x2="184.5" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="180.5" y1="68.5" x2="184.5" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="180.5" y1="74.5" x2="184.5" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <rect x="186.5" y="4" width="164.5" height="135" rx="7" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="198.5" y="29" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">Finish the WAV</text>
+  <text x="198.5" y="54" font-size="15" fill="#202020" text-anchor="start">Close capture and</text>
+  <text x="198.5" y="74" font-size="15" fill="#202020" text-anchor="start">package the audio.</text>
+  <line x1="353" y1="71.5" x2="367" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="363" y1="68.5" x2="367" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="363" y1="74.5" x2="367" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <rect x="369" y="4" width="164.5" height="135" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="381" y="29" font-size="16" fill="#6533a0" text-anchor="start" font-weight="700">Transcribe</text>
+  <text x="381" y="54" font-size="15" fill="#202020" text-anchor="start">Encode speech,</text>
+  <text x="381" y="74" font-size="15" fill="#202020" text-anchor="start">predict tokens, form</text>
+  <text x="381" y="94" font-size="15" fill="#202020" text-anchor="start">text.</text>
+  <line x1="535.5" y1="71.5" x2="549.5" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="545.5" y1="68.5" x2="549.5" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="545.5" y1="74.5" x2="549.5" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <rect x="551.5" y="4" width="164.5" height="135" rx="7" fill="#e2f3ef" stroke="#006b63"/>
+  <text x="563.5" y="29" font-size="16" fill="#006b63" text-anchor="start" font-weight="700">Deliver text</text>
+  <text x="563.5" y="54" font-size="15" fill="#202020" text-anchor="start">Write the clipboard</text>
+  <text x="563.5" y="74" font-size="15" fill="#202020" text-anchor="start">and optionally send</text>
+  <text x="563.5" y="94" font-size="15" fill="#202020" text-anchor="start">Paste.</text>
+  <line x1="4" y1="156" x2="716" y2="156" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="180" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Warm file request</text>
+  <text x="209" y="180" font-size="15" fill="#595954" text-anchor="start">WAV submitted → text returned by the helper</text>
+  <line x1="4" y1="206" x2="716" y2="206" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="230" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Stop to dispatch</text>
+  <text x="209" y="230" font-size="15" fill="#595954" text-anchor="start">Stop → clipboard write and optional paste event</text>
+  <line x1="4" y1="256" x2="716" y2="256" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="280" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Stop to visible text</text>
+  <text x="209" y="280" font-size="15" fill="#595954" text-anchor="start">Stop → foreground app inserts the words</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 649">
+  <rect x="4" y="4" width="310" height="85" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="16" y="29" font-size="16" fill="#903865" text-anchor="start" font-weight="700">Capture speech</text>
+  <text x="16" y="54" font-size="15" fill="#202020" text-anchor="start">Microphone → mono samples</text>
+  <line x1="27" y1="91" x2="27" y2="105" stroke="#595954" stroke-width="1.4"/>
+  <line x1="24" y1="101" x2="27" y2="105" stroke="#595954" stroke-width="1.4"/>
+  <line x1="30" y1="101" x2="27" y2="105" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="107" width="310" height="85" rx="7" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="16" y="132" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">Finish the WAV</text>
+  <text x="16" y="157" font-size="15" fill="#202020" text-anchor="start">Close capture and package the audio.</text>
+  <line x1="27" y1="194" x2="27" y2="208" stroke="#595954" stroke-width="1.4"/>
+  <line x1="24" y1="204" x2="27" y2="208" stroke="#595954" stroke-width="1.4"/>
+  <line x1="30" y1="204" x2="27" y2="208" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="210" width="310" height="85" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="16" y="235" font-size="16" fill="#6533a0" text-anchor="start" font-weight="700">Transcribe</text>
+  <text x="16" y="260" font-size="15" fill="#202020" text-anchor="start">Encode speech, predict tokens, form text.</text>
+  <line x1="27" y1="297" x2="27" y2="311" stroke="#595954" stroke-width="1.4"/>
+  <line x1="24" y1="307" x2="27" y2="311" stroke="#595954" stroke-width="1.4"/>
+  <line x1="30" y1="307" x2="27" y2="311" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="313" width="310" height="85" rx="7" fill="#e2f3ef" stroke="#006b63"/>
+  <text x="16" y="338" font-size="16" fill="#006b63" text-anchor="start" font-weight="700">Deliver text</text>
+  <text x="16" y="363" font-size="15" fill="#202020" text-anchor="start">Write the clipboard and optionally send</text>
+  <text x="16" y="383" font-size="15" fill="#202020" text-anchor="start">Paste.</text>
+  <line x1="4" y1="415" x2="314" y2="415" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="439" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Warm file request</text>
+  <text x="4" y="460" font-size="15" fill="#595954" text-anchor="start">WAV submitted → text returned by the helper</text>
+  <line x1="4" y1="486" x2="314" y2="486" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="510" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Stop to dispatch</text>
+  <text x="4" y="531" font-size="15" fill="#595954" text-anchor="start">Stop → clipboard write and optional paste</text>
+  <text x="4" y="551" font-size="15" fill="#595954" text-anchor="start">event</text>
+  <line x1="4" y1="577" x2="314" y2="577" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="601" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Stop to visible text</text>
+  <text x="4" y="622" font-size="15" fill="#595954" text-anchor="start">Stop → foreground app inserts the words</text>
+</svg>
+</svg>
+<figcaption>The 552 and 558 ms results time the first clock. Nemo can log dispatch itself. Measuring visible insertion requires observing the receiving app.</figcaption>
+</figure>
+<p class="source"><a href="../../src/main.rs">App event loop</a> · <a href="../../src/output.rs">Text delivery</a> · <a href="../delivery-latency.md">Timing boundaries</a></p>
+</article>
+
+<article id="warm">
+<h2>Keep the weights in memory. Wake the GPU while you speak.</h2>
+<p>The running helper occupies about 27 GB. Starting it and loading the model took about three seconds in the final trials. The M5 Max profile starts loading in the background at launch and keeps the weights until you quit. You can start recording while it loads. A second change addresses the slower first GPU request after a quiet interval.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="warm-title warm-desc" style="--wide-ratio:720/178; --narrow-ratio:318/407">
+<title id="warm-title">Model residency and recording-only GPU wakeups</title><desc id="warm-desc">Launch loads the weights. The worker sleeps while idle. Small GPU operations run at recording start and every two seconds until Stop or Cancel.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 178">
+  <rect x="4" y="4" width="169" height="168" rx="7" fill="#e5f2fc"/>
+  <text x="16" y="28" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">Launch</text>
+  <text x="16" y="61" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Load weights</text>
+  <text x="16" y="88" font-size="15" fill="#595954" text-anchor="start">Recording can start</text>
+  <text x="16" y="108" font-size="15" fill="#595954" text-anchor="start">during loading.</text>
+  <line x1="174" y1="88" x2="183" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <line x1="179" y1="85" x2="183" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <line x1="179" y1="91" x2="183" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <rect x="185" y="4" width="169" height="168" rx="7" fill="#e5f2fc"/>
+  <text x="197" y="28" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">Idle</text>
+  <text x="197" y="61" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Keep weights</text>
+  <text x="197" y="88" font-size="15" fill="#595954" text-anchor="start">The worker sleeps</text>
+  <text x="197" y="108" font-size="15" fill="#595954" text-anchor="start">between jobs.</text>
+  <line x1="355" y1="88" x2="364" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <line x1="360" y1="85" x2="364" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <line x1="360" y1="91" x2="364" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <rect x="366" y="4" width="169" height="168" rx="7" fill="#fbeaf2"/>
+  <text x="378" y="28" font-size="16" fill="#903865" text-anchor="start" font-weight="700">Recording</text>
+  <text x="378" y="61" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Wake GPU</text>
+  <text x="378" y="88" font-size="15" fill="#595954" text-anchor="start">Small GPU job at the</text>
+  <text x="378" y="108" font-size="15" fill="#595954" text-anchor="start">start, then every 2 s.</text>
+  <line x1="381" y1="153" x2="520" y2="153" stroke="#903865" stroke-width="1"/>
+  <circle cx="381" cy="153" r="4" fill="#903865"/>
+  <circle cx="450.5" cy="153" r="4" fill="#903865"/>
+  <circle cx="520" cy="153" r="4" fill="#903865"/>
+  <line x1="536" y1="88" x2="545" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <line x1="541" y1="85" x2="545" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <line x1="541" y1="91" x2="545" y2="88" stroke="#595954" stroke-width="1.4"/>
+  <rect x="547" y="4" width="169" height="168" rx="7" fill="#f2eafa"/>
+  <text x="559" y="28" font-size="16" fill="#6533a0" text-anchor="start" font-weight="700">Stop</text>
+  <text x="559" y="61" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Transcribe</text>
+  <text x="559" y="88" font-size="15" fill="#595954" text-anchor="start">Wakeups end on</text>
+  <text x="559" y="108" font-size="15" fill="#595954" text-anchor="start">Stop or Cancel.</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 407">
+  <rect x="4" y="4" width="310" height="83" rx="7" fill="#e5f2fc"/>
+  <text x="16" y="28" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">Launch</text>
+  <text x="116" y="28" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Load weights</text>
+  <text x="16" y="56" font-size="15" fill="#595954" text-anchor="start">Recording can start during loading.</text>
+  <line x1="28" y1="88" x2="28" y2="98" stroke="#595954" stroke-width="1.4"/>
+  <line x1="25" y1="94" x2="28" y2="98" stroke="#595954" stroke-width="1.4"/>
+  <line x1="31" y1="94" x2="28" y2="98" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="100" width="310" height="83" rx="7" fill="#e5f2fc"/>
+  <text x="16" y="124" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">Idle</text>
+  <text x="116" y="124" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Keep weights</text>
+  <text x="16" y="152" font-size="15" fill="#595954" text-anchor="start">The worker sleeps between jobs.</text>
+  <line x1="28" y1="184" x2="28" y2="194" stroke="#595954" stroke-width="1.4"/>
+  <line x1="25" y1="190" x2="28" y2="194" stroke="#595954" stroke-width="1.4"/>
+  <line x1="31" y1="190" x2="28" y2="194" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="196" width="310" height="109" rx="7" fill="#fbeaf2"/>
+  <text x="16" y="220" font-size="16" fill="#903865" text-anchor="start" font-weight="700">Recording</text>
+  <text x="116" y="220" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Wake GPU</text>
+  <text x="16" y="248" font-size="15" fill="#595954" text-anchor="start">Small GPU job at the start, then every 2 s.</text>
+  <line x1="19" y1="286" x2="299" y2="286" stroke="#903865" stroke-width="1"/>
+  <circle cx="19" cy="286" r="4" fill="#903865"/>
+  <circle cx="159" cy="286" r="4" fill="#903865"/>
+  <circle cx="299" cy="286" r="4" fill="#903865"/>
+  <line x1="28" y1="306" x2="28" y2="316" stroke="#595954" stroke-width="1.4"/>
+  <line x1="25" y1="312" x2="28" y2="316" stroke="#595954" stroke-width="1.4"/>
+  <line x1="31" y1="312" x2="28" y2="316" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="318" width="310" height="83" rx="7" fill="#f2eafa"/>
+  <text x="16" y="342" font-size="16" fill="#6533a0" text-anchor="start" font-weight="700">Stop</text>
+  <text x="116" y="342" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Transcribe</text>
+  <text x="16" y="370" font-size="15" fill="#595954" text-anchor="start">Wakeups end on Stop or Cancel.</text>
+</svg>
+</svg>
+<figcaption>A 100 ms silent clip occupied the helper for 325 ms in one four-pair experiment. The recording-only MLX wakeup sums 32 squared values and uses no audio. Dispatching it asynchronously leaves the worker available for the real request.</figcaption>
+</figure>
+<p class="detail"><strong>Why two seconds?</strong> With a five-second test recording, the following requests took 222, 227, 406 and 412 ms at one-, two-, three- and four-second spacing. Two seconds was the longest tested interval within 3% of one second. These measurements cover request latency. A separate test of the native nemo-speech backend found no repeatable benefit from recording-time wakeups.</p>
+<p class="source"><a href="../performance.md#keeping-the-model-ready-between-dictations">Idle and wake experiments</a> · <a href="../../src/backend.rs">Wake request</a></p>
+</article>
+
+<article id="audio">
+<h2>Give the encoder the samples it expects</h2>
+<p>The frozen test audio was already at 16 kHz, so it skipped a step Nemo performs on this MacBook’s 48 kHz microphone input. Replaying the same recording in microphone format exposed that cost. To reach 16 kHz, Nemo filters out frequencies the lower rate cannot represent, then keeps one sample for every three.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="audio-title audio-desc" style="--wide-ratio:720/227; --narrow-ratio:318/424">
+<title id="audio-title">From 48 kHz audio to the first token</title><desc id="audio-desc">Filter and downsample the WAV to 16 kHz. The encoder produces audio vectors. Decoder prefill reads those vectors and the prompt to choose the first token.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 227">
+  <rect x="4" y="4" width="225.3" height="135" rx="7" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="16" y="29" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">48 kHz WAV</text>
+  <text x="16" y="54" font-size="15" fill="#202020" text-anchor="start">48,000 microphone samples</text>
+  <text x="16" y="74" font-size="15" fill="#202020" text-anchor="start">per second.</text>
+  <line x1="231.3" y1="71.5" x2="245.3" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="241.3" y1="68.5" x2="245.3" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="241.3" y1="74.5" x2="245.3" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <rect x="247.3" y="4" width="225.3" height="135" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="259.3" y="29" font-size="16" fill="#6533a0" text-anchor="start" font-weight="700">Filter and resample</text>
+  <text x="259.3" y="54" font-size="15" fill="#202020" text-anchor="start">Reuse the filter across</text>
+  <text x="259.3" y="74" font-size="15" fill="#202020" text-anchor="start">overlapping blocks. Keep one</text>
+  <text x="259.3" y="94" font-size="15" fill="#202020" text-anchor="start">sample in three.</text>
+  <line x1="474.7" y1="71.5" x2="488.7" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="484.7" y1="68.5" x2="488.7" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <line x1="484.7" y1="74.5" x2="488.7" y2="71.5" stroke="#595954" stroke-width="1.4"/>
+  <rect x="490.7" y="4" width="225.3" height="135" rx="7" fill="#e2f3ef" stroke="#006b63"/>
+  <text x="502.7" y="29" font-size="16" fill="#006b63" text-anchor="start" font-weight="700">16 kHz speech</text>
+  <text x="502.7" y="54" font-size="15" fill="#202020" text-anchor="start">The encoder turns the filtered</text>
+  <text x="502.7" y="74" font-size="15" fill="#202020" text-anchor="start">sound into vectors.</text>
+  <line x1="4" y1="156" x2="716" y2="156" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="180" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Decoder prefill</text>
+  <text x="209" y="180" font-size="15" fill="#595954" text-anchor="start">Read the audio vectors and prompt together. Save decoder state and</text>
+  <text x="209" y="200" font-size="15" fill="#595954" text-anchor="start">choose the first token.</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 424">
+  <rect x="4" y="4" width="310" height="85" rx="7" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="16" y="29" font-size="16" fill="#075e98" text-anchor="start" font-weight="700">48 kHz WAV</text>
+  <text x="16" y="54" font-size="15" fill="#202020" text-anchor="start">48,000 microphone samples per second.</text>
+  <line x1="27" y1="91" x2="27" y2="105" stroke="#595954" stroke-width="1.4"/>
+  <line x1="24" y1="101" x2="27" y2="105" stroke="#595954" stroke-width="1.4"/>
+  <line x1="30" y1="101" x2="27" y2="105" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="107" width="310" height="85" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="16" y="132" font-size="16" fill="#6533a0" text-anchor="start" font-weight="700">Filter and resample</text>
+  <text x="16" y="157" font-size="15" fill="#202020" text-anchor="start">Reuse the filter across overlapping blocks.</text>
+  <text x="16" y="177" font-size="15" fill="#202020" text-anchor="start">Keep one sample in three.</text>
+  <line x1="27" y1="194" x2="27" y2="208" stroke="#595954" stroke-width="1.4"/>
+  <line x1="24" y1="204" x2="27" y2="208" stroke="#595954" stroke-width="1.4"/>
+  <line x1="30" y1="204" x2="27" y2="208" stroke="#595954" stroke-width="1.4"/>
+  <rect x="4" y="210" width="310" height="85" rx="7" fill="#e2f3ef" stroke="#006b63"/>
+  <text x="16" y="235" font-size="16" fill="#006b63" text-anchor="start" font-weight="700">16 kHz speech</text>
+  <text x="16" y="260" font-size="15" fill="#202020" text-anchor="start">The encoder turns the filtered sound into</text>
+  <text x="16" y="280" font-size="15" fill="#202020" text-anchor="start">vectors.</text>
+  <line x1="4" y1="312" x2="314" y2="312" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="336" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Decoder prefill</text>
+  <text x="4" y="357" font-size="15" fill="#595954" text-anchor="start">Read the audio vectors and prompt together.</text>
+  <text x="4" y="377" font-size="15" fill="#595954" text-anchor="start">Save decoder state and choose the first</text>
+  <text x="4" y="397" font-size="15" fill="#595954" text-anchor="start">token.</text>
+</svg>
+</svg>
+<figcaption>Reusing the filter across blocks reduced a 30-second audio read and resample from about 130 ms to 9 ms. In the signed app, the whole warm request fell from 825 to 707 ms. The final version uses NumPy, already loaded with the model. On a five-second clip the first request after loading fell from 625 to 229 ms. Warm repeats stayed at 192 ms.</figcaption>
+</figure>
+<p class="source"><a href="../../scripts/mlx-serve.py">Capture resampler</a> · <a href="../performance.md#first-request-after-model-loading">Resampling and first-request measurements</a></p>
+</article>
+
+<article id="verify">
+<h2>The draft guesses. The target chooses.</h2>
+<p>Ordinarily the full decoder predicts one token at a time. A token can be a word, part of a word or punctuation. Nemo uses a smaller, faster decoder to propose up to eight tokens before calling the full model again. The full target model checks them together and accepts the matching prefix.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="verify-title verify-desc" style="--wide-ratio:720/315; --narrow-ratio:318/495">
+<title id="verify-title">How the target verifies a speculative batch</title><desc id="verify-desc">For “the red car”, the target accepts “the”, corrects “red” to “blue” and drops “car”. If “the blue car” all matches, the same target pass can emit a period.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 315">
+  <text x="4" y="23" font-size="18" fill="#202020" text-anchor="start" font-weight="700">One wrong guess</text>
+  <text x="4" y="54" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Draft proposes</text>
+  <rect x="154" y="37" width="45.5" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="176.8" y="57" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">the</text>
+  <rect x="206.5" y="37" width="59.5" height="29" rx="4" fill="#fbeaf2" stroke="#af2943"/>
+  <text x="236.2" y="57" font-size="15" fill="#af2943" text-anchor="middle" font-weight="700">red ×</text>
+  <rect x="273" y="37" width="46" height="29" rx="4" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="296" y="57" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">car</text>
+  <text x="4" y="92" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Target emits</text>
+  <rect x="154" y="75" width="61" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="184.5" y="95" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">the ✓</text>
+  <rect x="222" y="75" width="53.5" height="29" rx="4" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="248.8" y="95" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">blue</text>
+  <text x="4" y="128" font-size="15" fill="#595954" text-anchor="start">At the first mismatch, emit the target’s “blue”. Discard the draft suffix and continue from “the blue”.</text>
+  <line x1="4" y1="152" x2="716" y2="152" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="185" font-size="18" fill="#202020" text-anchor="start" font-weight="700">All guesses match</text>
+  <text x="4" y="216" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Draft proposes</text>
+  <rect x="154" y="199" width="45.5" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="176.8" y="219" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">the</text>
+  <rect x="206.5" y="199" width="53.5" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="233.2" y="219" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">blue</text>
+  <rect x="267" y="199" width="46" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="290" y="219" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">car</text>
+  <text x="4" y="254" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Target emits</text>
+  <rect x="154" y="237" width="61" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="184.5" y="257" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">the ✓</text>
+  <rect x="222" y="237" width="69" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="256.5" y="257" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">blue ✓</text>
+  <rect x="298" y="237" width="61.5" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="328.8" y="257" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">car ✓</text>
+  <rect x="366.5" y="237" width="27" height="29" rx="4" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="380" y="257" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">.</text>
+  <text x="4" y="290" font-size="15" fill="#595954" text-anchor="start">Accept the whole draft. The same target check supplies one more token, here a period.</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 495">
+  <text x="4" y="23" font-size="18" fill="#202020" text-anchor="start" font-weight="700">One wrong guess</text>
+  <text x="4" y="54" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Draft proposes</text>
+  <rect x="4" y="62" width="45.5" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="26.8" y="82" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">the</text>
+  <rect x="56.5" y="62" width="59.5" height="29" rx="4" fill="#fbeaf2" stroke="#af2943"/>
+  <text x="86.2" y="82" font-size="15" fill="#af2943" text-anchor="middle" font-weight="700">red ×</text>
+  <rect x="123" y="62" width="46" height="29" rx="4" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="146" y="82" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">car</text>
+  <text x="4" y="117" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Target emits</text>
+  <rect x="4" y="125" width="61" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="34.5" y="145" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">the ✓</text>
+  <rect x="72" y="125" width="53.5" height="29" rx="4" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="98.8" y="145" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">blue</text>
+  <text x="4" y="178" font-size="15" fill="#595954" text-anchor="start">At the first mismatch, emit the target’s “blue”.</text>
+  <text x="4" y="198" font-size="15" fill="#595954" text-anchor="start">Discard the draft suffix and continue from “the</text>
+  <text x="4" y="218" font-size="15" fill="#595954" text-anchor="start">blue”.</text>
+  <line x1="4" y1="242" x2="314" y2="242" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="275" font-size="18" fill="#202020" text-anchor="start" font-weight="700">All guesses match</text>
+  <text x="4" y="306" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Draft proposes</text>
+  <rect x="4" y="314" width="45.5" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="26.8" y="334" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">the</text>
+  <rect x="56.5" y="314" width="53.5" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="83.2" y="334" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">blue</text>
+  <rect x="117" y="314" width="46" height="29" rx="4" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="140" y="334" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">car</text>
+  <text x="4" y="369" font-size="15" fill="#595954" text-anchor="start" font-weight="700">Target emits</text>
+  <rect x="4" y="377" width="61" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="34.5" y="397" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">the ✓</text>
+  <rect x="72" y="377" width="69" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="106.5" y="397" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">blue ✓</text>
+  <rect x="148" y="377" width="61.5" height="29" rx="4" fill="#e2f3ef" stroke="#187636"/>
+  <text x="178.8" y="397" font-size="15" fill="#187636" text-anchor="middle" font-weight="700">car ✓</text>
+  <rect x="216.5" y="377" width="27" height="29" rx="4" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="230" y="397" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">.</text>
+  <text x="4" y="430" font-size="15" fill="#595954" text-anchor="start">Accept the whole draft. The same target</text>
+  <text x="4" y="450" font-size="15" fill="#595954" text-anchor="start">check supplies one more token, here a</text>
+  <text x="4" y="470" font-size="15" fill="#595954" text-anchor="start">period.</text>
+</svg>
+</svg>
+<figcaption>The examples show two possible outcomes. In an earlier profile of the 87-word recording, Nemo produced 95 text tokens. The target accepted 85 of 86 draft proposals across 11 passes. With that many matches, one target pass can advance several tokens.</figcaption>
+</figure>
+<p class="source"><a href="../../scripts/nemo_mtp.py">Verification and cache repair</a> · <a href="../performance.md#where-the-decoder-spent-its-time">Measured token counts</a></p>
+</article>
+
+<article id="shortlist">
+<h2>Read less memory for each guess</h2>
+<p>The draft used to score every possible next token with a weight table of about 705 MB. Repeating that read for dozens of guesses was expensive. Nemo now uses a compact copy to find likely candidates first.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="shortlist-title shortlist-desc" style="--wide-ratio:720/214; --narrow-ratio:318/299">
+<title id="shortlist-title">From 131,072 possibilities to one draft token</title><desc id="shortlist-desc">Rank the vocabulary using 4-bit weights, score the best 16 with the original weights and send one candidate to the target.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 214">
+  <rect x="4" y="8" width="224" height="55" rx="7" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="116" y="42" font-size="23" fill="#075e98" text-anchor="middle" font-weight="700">131,072</text>
+  <text x="243" y="26" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Vocabulary entries</text>
+  <text x="243" y="48" font-size="15" fill="#595954" text-anchor="start">Score all entries with a 4-bit copy of the weights.</text>
+  <rect x="41" y="78" width="150.1" height="55" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="116" y="112" font-size="23" fill="#6533a0" text-anchor="middle" font-weight="700">16</text>
+  <text x="243" y="96" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Shortlisted entries</text>
+  <text x="243" y="118" font-size="15" fill="#595954" text-anchor="start">Score these 16 rows again using the original 16-bit weights.</text>
+  <rect x="73.4" y="148" width="85.1" height="55" rx="7" fill="#e2f3ef" stroke="#006b63"/>
+  <text x="116" y="182" font-size="23" fill="#006b63" text-anchor="middle" font-weight="700">1</text>
+  <text x="243" y="166" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Draft token</text>
+  <text x="243" y="188" font-size="15" fill="#595954" text-anchor="start">The best finalist becomes the next guess for the full target to check.</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 299">
+  <rect x="4" y="8" width="99" height="70" rx="7" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="53.5" y="49.5" font-size="18" fill="#075e98" text-anchor="middle" font-weight="700">131,072</text>
+  <text x="118" y="26" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Vocabulary entries</text>
+  <text x="118" y="48" font-size="15" fill="#595954" text-anchor="start">Score all entries with a 4-bit</text>
+  <text x="118" y="68" font-size="15" fill="#595954" text-anchor="start">copy of the weights.</text>
+  <rect x="20.3" y="93" width="66.3" height="90" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="53.5" y="144.5" font-size="18" fill="#6533a0" text-anchor="middle" font-weight="700">16</text>
+  <text x="118" y="111" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Shortlisted entries</text>
+  <text x="118" y="133" font-size="15" fill="#595954" text-anchor="start">Score these 16 rows again</text>
+  <text x="118" y="153" font-size="15" fill="#595954" text-anchor="start">using the original 16-bit</text>
+  <text x="118" y="173" font-size="15" fill="#595954" text-anchor="start">weights.</text>
+  <rect x="34.7" y="198" width="37.6" height="90" rx="7" fill="#e2f3ef" stroke="#006b63"/>
+  <text x="53.5" y="249.5" font-size="18" fill="#006b63" text-anchor="middle" font-weight="700">1</text>
+  <text x="118" y="216" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Draft token</text>
+  <text x="118" y="238" font-size="15" fill="#595954" text-anchor="start">The best finalist becomes</text>
+  <text x="118" y="258" font-size="15" fill="#595954" text-anchor="start">the next guess for the full</text>
+  <text x="118" y="278" font-size="15" fill="#595954" text-anchor="start">target to check.</text>
+</svg>
+</svg>
+<figcaption>In its own signed-app comparison, shortlisting reduced the 30-second warm median from 688 to 601 ms. The compact table adds 189 MiB once at load. Using the low-precision ranking alone changed the long transcript. Scoring the 16 finalists again restored the baseline text on the test set.</figcaption>
+</figure>
+<p class="source"><a href="../../scripts/nemo_mtp.py">Draft head and token selection</a> · <a href="../performance.md#faster-speculative-decoding-on-30-second-dictation">Shortlist experiment</a></p>
+</article>
+
+<article id="readback">
+<h2>Let the GPU keep its guesses until the batch is ready</h2>
+<p>Reading a token ID back into Python makes the CPU wait for the GPU. The next guess needs the previous token, but the GPU can feed that token into the next step itself.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="readback-title readback-desc" style="--wide-ratio:720/275; --narrow-ratio:318/315">
+<title id="readback-title">Reading draft tokens in one batch</title><desc id="readback-desc">Previously Python waited after every GPU guess. Now the GPU passes guesses directly forward and Python reads the batch once.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 275">
+  <text x="4" y="24" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Previously</text>
+  <rect x="4" y="37" width="168.2" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="88.1" y="63" font-size="17" fill="#6533a0" text-anchor="middle" font-weight="700">Guess 1</text>
+  <line x1="174.2" y1="58" x2="183.2" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="179.2" y1="55" x2="183.2" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="179.2" y1="61" x2="183.2" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <rect x="185.2" y="37" width="168.2" height="42" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="269.4" y="63" font-size="17" fill="#903865" text-anchor="middle" font-weight="700">CPU read</text>
+  <line x1="355.5" y1="58" x2="364.5" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="360.5" y1="55" x2="364.5" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="360.5" y1="61" x2="364.5" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <rect x="366.5" y="37" width="168.2" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="450.6" y="63" font-size="17" fill="#6533a0" text-anchor="middle" font-weight="700">Guess 2</text>
+  <line x1="536.8" y1="58" x2="545.8" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="541.8" y1="55" x2="545.8" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="541.8" y1="61" x2="545.8" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <rect x="547.8" y="37" width="168.2" height="42" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="631.9" y="63" font-size="17" fill="#903865" text-anchor="middle" font-weight="700">CPU read</text>
+  <text x="4" y="103" font-size="15" fill="#595954" text-anchor="start">Each new guess waited for Python to read one token ID back from the GPU.</text>
+  <line x1="4" y1="133" x2="716" y2="133" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="165" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Now</text>
+  <rect x="4" y="178" width="168.2" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="88.1" y="204" font-size="17" fill="#6533a0" text-anchor="middle" font-weight="700">Guess 1</text>
+  <line x1="174.2" y1="199" x2="183.2" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <line x1="179.2" y1="196" x2="183.2" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <line x1="179.2" y1="202" x2="183.2" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <rect x="185.2" y="178" width="168.2" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="269.4" y="204" font-size="17" fill="#6533a0" text-anchor="middle" font-weight="700">2 … 7</text>
+  <line x1="355.5" y1="199" x2="364.5" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <line x1="360.5" y1="196" x2="364.5" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <line x1="360.5" y1="202" x2="364.5" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <rect x="366.5" y="178" width="168.2" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="450.6" y="204" font-size="17" fill="#6533a0" text-anchor="middle" font-weight="700">8</text>
+  <line x1="536.8" y1="199" x2="545.8" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <line x1="541.8" y1="196" x2="545.8" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <line x1="541.8" y1="202" x2="545.8" y2="199" stroke="#595954" stroke-width="1.4"/>
+  <rect x="547.8" y="178" width="168.2" height="42" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="631.9" y="204" font-size="17" fill="#903865" text-anchor="middle" font-weight="700">CPU read</text>
+  <text x="4" y="244" font-size="15" fill="#595954" text-anchor="start">The GPU passes token IDs forward. Python reads the up-to-eight-token draft in one batch.</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 315">
+  <text x="4" y="24" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Previously</text>
+  <rect x="4" y="37" width="67.8" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="37.9" y="63" font-size="14" fill="#6533a0" text-anchor="middle" font-weight="700">Guess 1</text>
+  <line x1="73.8" y1="58" x2="82.8" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="78.8" y1="55" x2="82.8" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="78.8" y1="61" x2="82.8" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <rect x="84.8" y="37" width="67.8" height="42" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="118.6" y="63" font-size="14" fill="#903865" text-anchor="middle" font-weight="700">CPU read</text>
+  <line x1="154.5" y1="58" x2="163.5" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="159.5" y1="55" x2="163.5" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="159.5" y1="61" x2="163.5" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <rect x="165.5" y="37" width="67.8" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="199.4" y="63" font-size="14" fill="#6533a0" text-anchor="middle" font-weight="700">Guess 2</text>
+  <line x1="235.2" y1="58" x2="244.2" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="240.2" y1="55" x2="244.2" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <line x1="240.2" y1="61" x2="244.2" y2="58" stroke="#595954" stroke-width="1.4"/>
+  <rect x="246.2" y="37" width="67.8" height="42" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="280.1" y="63" font-size="14" fill="#903865" text-anchor="middle" font-weight="700">CPU read</text>
+  <text x="4" y="103" font-size="15" fill="#595954" text-anchor="start">Each new guess waited for Python to read</text>
+  <text x="4" y="123" font-size="15" fill="#595954" text-anchor="start">one token ID back from the GPU.</text>
+  <line x1="4" y1="153" x2="314" y2="153" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="185" font-size="18" fill="#202020" text-anchor="start" font-weight="700">Now</text>
+  <rect x="4" y="198" width="67.8" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="37.9" y="224" font-size="14" fill="#6533a0" text-anchor="middle" font-weight="700">Guess 1</text>
+  <line x1="73.8" y1="219" x2="82.8" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <line x1="78.8" y1="216" x2="82.8" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <line x1="78.8" y1="222" x2="82.8" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <rect x="84.8" y="198" width="67.8" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="118.6" y="224" font-size="14" fill="#6533a0" text-anchor="middle" font-weight="700">2 … 7</text>
+  <line x1="154.5" y1="219" x2="163.5" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <line x1="159.5" y1="216" x2="163.5" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <line x1="159.5" y1="222" x2="163.5" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <rect x="165.5" y="198" width="67.8" height="42" rx="7" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="199.4" y="224" font-size="14" fill="#6533a0" text-anchor="middle" font-weight="700">8</text>
+  <line x1="235.2" y1="219" x2="244.2" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <line x1="240.2" y1="216" x2="244.2" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <line x1="240.2" y1="222" x2="244.2" y2="219" stroke="#595954" stroke-width="1.4"/>
+  <rect x="246.2" y="198" width="67.8" height="42" rx="7" fill="#fbeaf2" stroke="#903865"/>
+  <text x="280.1" y="224" font-size="14" fill="#903865" text-anchor="middle" font-weight="700">CPU read</text>
+  <text x="4" y="264" font-size="15" fill="#595954" text-anchor="start">The GPU passes token IDs forward. Python</text>
+  <text x="4" y="284" font-size="15" fill="#595954" text-anchor="start">reads the up-to-eight-token draft in one batch.</text>
+</svg>
+</svg>
+<figcaption>Within a full eight-token draft, eight host reads become one. Nemo still trims the list at the first proposed end token before the target checks it. Against the same scheduled verifier, this change alone took the median from 618 to 597 ms and won four of six pairs.</figcaption>
+</figure>
+<p class="source"><a href="../../scripts/nemo_mtp.py">Draft loop</a> · <a href="../performance.md#reducing-warm-latency-below-585-ms-on-the-30-second-project-update">Readback comparison</a></p>
+</article>
+
+<article id="layers">
+<h2>Give Metal the target layers in groups</h2>
+<p>MLX can build a chain of operations before submitting it to the GPU. During verification Nemo submits each completed group of twelve layers. The GPU can start that group while the CPU prepares the next one.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="layers-title layers-desc" style="--wide-ratio:720/182; --narrow-ratio:318/240">
+<title id="layers-title">CPU and GPU work during verification</title><desc id="layers-desc">The CPU prepares successive twelve-layer groups. The GPU runs each submitted group while the CPU prepares the next.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 182">
+  <text x="3" y="36.5" font-size="15" fill="#903865" text-anchor="start" font-weight="700">CPU</text>
+  <rect x="59" y="6" width="160.5" height="51" rx="5" fill="#fbeaf2" stroke="#903865"/>
+  <text x="139.2" y="27.5" font-size="15" fill="#903865" text-anchor="middle" font-weight="700">Build</text>
+  <text x="139.2" y="46.5" font-size="14" fill="#903865" text-anchor="middle">1–12</text>
+  <line x1="187.4" y1="59" x2="253.4" y2="76" stroke="#595954" stroke-width="1"/>
+  <line x1="248.4" y1="75" x2="253.4" y2="76" stroke="#595954" stroke-width="1"/>
+  <line x1="252.4" y1="72" x2="253.4" y2="76" stroke="#595954" stroke-width="1"/>
+  <rect x="224.5" y="6" width="160.5" height="51" rx="5" fill="#fbeaf2" stroke="#903865"/>
+  <text x="304.8" y="27.5" font-size="15" fill="#903865" text-anchor="middle" font-weight="700">Build</text>
+  <text x="304.8" y="46.5" font-size="14" fill="#903865" text-anchor="middle">13–24</text>
+  <line x1="352.9" y1="59" x2="418.9" y2="76" stroke="#595954" stroke-width="1"/>
+  <line x1="413.9" y1="75" x2="418.9" y2="76" stroke="#595954" stroke-width="1"/>
+  <line x1="417.9" y1="72" x2="418.9" y2="76" stroke="#595954" stroke-width="1"/>
+  <rect x="390" y="6" width="160.5" height="51" rx="5" fill="#fbeaf2" stroke="#903865"/>
+  <text x="470.2" y="27.5" font-size="15" fill="#903865" text-anchor="middle" font-weight="700">Build</text>
+  <text x="470.2" y="46.5" font-size="14" fill="#903865" text-anchor="middle">25–36</text>
+  <line x1="518.4" y1="59" x2="584.4" y2="76" stroke="#595954" stroke-width="1"/>
+  <line x1="579.4" y1="75" x2="584.4" y2="76" stroke="#595954" stroke-width="1"/>
+  <line x1="583.4" y1="72" x2="584.4" y2="76" stroke="#595954" stroke-width="1"/>
+  <text x="3" y="110.5" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">GPU</text>
+  <rect x="224.5" y="80" width="160.5" height="51" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="304.8" y="101.5" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="304.8" y="120.5" font-size="14" fill="#6533a0" text-anchor="middle">1–12</text>
+  <rect x="390" y="80" width="160.5" height="51" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="470.2" y="101.5" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="470.2" y="120.5" font-size="14" fill="#6533a0" text-anchor="middle">13–24</text>
+  <rect x="555.5" y="80" width="160.5" height="51" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="635.8" y="101.5" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="635.8" y="120.5" font-size="14" fill="#6533a0" text-anchor="middle">25–36</text>
+  <text x="4" y="159" font-size="15" fill="#595954" text-anchor="start">Each column is a submission step. Layers 37–48 follow the same sequence.</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 240">
+  <text x="3" y="46" font-size="15" fill="#903865" text-anchor="start" font-weight="700">CPU</text>
+  <rect x="44" y="6" width="63.8" height="70" rx="5" fill="#fbeaf2" stroke="#903865"/>
+  <text x="75.9" y="37" font-size="15" fill="#903865" text-anchor="middle" font-weight="700">Build</text>
+  <text x="75.9" y="56" font-size="14" fill="#903865" text-anchor="middle">1–12</text>
+  <line x1="95" y1="78" x2="124.2" y2="95" stroke="#595954" stroke-width="1"/>
+  <line x1="119.2" y1="94" x2="124.2" y2="95" stroke="#595954" stroke-width="1"/>
+  <line x1="123.2" y1="91" x2="124.2" y2="95" stroke="#595954" stroke-width="1"/>
+  <rect x="112.8" y="6" width="63.8" height="70" rx="5" fill="#fbeaf2" stroke="#903865"/>
+  <text x="144.6" y="37" font-size="15" fill="#903865" text-anchor="middle" font-weight="700">Build</text>
+  <text x="144.6" y="56" font-size="14" fill="#903865" text-anchor="middle">13–24</text>
+  <line x1="163.8" y1="78" x2="193" y2="95" stroke="#595954" stroke-width="1"/>
+  <line x1="188" y1="94" x2="193" y2="95" stroke="#595954" stroke-width="1"/>
+  <line x1="192" y1="91" x2="193" y2="95" stroke="#595954" stroke-width="1"/>
+  <rect x="181.5" y="6" width="63.8" height="70" rx="5" fill="#fbeaf2" stroke="#903865"/>
+  <text x="213.4" y="37" font-size="15" fill="#903865" text-anchor="middle" font-weight="700">Build</text>
+  <text x="213.4" y="56" font-size="14" fill="#903865" text-anchor="middle">25–36</text>
+  <line x1="232.5" y1="78" x2="261.7" y2="95" stroke="#595954" stroke-width="1"/>
+  <line x1="256.7" y1="94" x2="261.7" y2="95" stroke="#595954" stroke-width="1"/>
+  <line x1="260.7" y1="91" x2="261.7" y2="95" stroke="#595954" stroke-width="1"/>
+  <text x="3" y="139" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">GPU</text>
+  <rect x="112.8" y="99" width="63.8" height="70" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="144.6" y="130" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="144.6" y="149" font-size="14" fill="#6533a0" text-anchor="middle">1–12</text>
+  <rect x="181.5" y="99" width="63.8" height="70" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="213.4" y="130" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="213.4" y="149" font-size="14" fill="#6533a0" text-anchor="middle">13–24</text>
+  <rect x="250.2" y="99" width="63.8" height="70" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="282.1" y="130" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="282.1" y="149" font-size="14" fill="#6533a0" text-anchor="middle">25–36</text>
+  <text x="4" y="197" font-size="15" fill="#595954" text-anchor="start">Each column is a submission step. Layers</text>
+  <text x="4" y="217" font-size="15" fill="#595954" text-anchor="start">37–48 follow the same sequence.</text>
+</svg>
+</svg>
+<figcaption>Illustrative submission order. Data still flows through the layers in sequence. Nemo submits after layers 12, 24, 36 and 48, then waits for the verified token IDs. The early scheduling prototype moved the warm median from 610 to 585 ms, a 4.1% median paired improvement.</figcaption>
+</figure>
+<p class="source"><a href="../../scripts/nemo_mtp.py">Target layer traversal</a> · <a href="../target-verification-m5-max.md">Scheduling profile</a></p>
+</article>
+
+<article id="tail">
+<h2>Compute the draft output only where it is used</h2>
+<p>After reading the prompt or repairing a verified batch, the draft must remember <em>every</em> position. Only the <em>last</em> position supplies the next guess. Nemo can keep the entire attention history while skipping earlier expert outputs.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="tail-title tail-desc" style="--wide-ratio:720/210; --narrow-ratio:318/210">
+<title id="tail-title">Which positions get which draft computations</title><desc id="tail-desc">The draft keeps attention history for all positions. Previously experts ran at all positions. Now they run only at the last position.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 210">
+  <text x="4" y="30" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Position</text>
+  <text x="279.2" y="30" font-size="15" fill="#595954" text-anchor="middle">1</text>
+  <text x="404.8" y="30" font-size="15" fill="#595954" text-anchor="middle">2</text>
+  <text x="530.2" y="30" font-size="15" fill="#595954" text-anchor="middle">3</text>
+  <text x="655.8" y="30" font-size="15" fill="#595954" text-anchor="middle">Last</text>
+  <text x="4" y="82" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Attention history</text>
+  <rect x="219" y="56" width="120.5" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="279.2" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <rect x="344.5" y="56" width="120.5" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="404.8" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <rect x="470" y="56" width="120.5" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="530.2" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <rect x="595.5" y="56" width="120.5" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="655.8" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <text x="4" y="134" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Draft experts before</text>
+  <rect x="219" y="108" width="120.5" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="279.2" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <rect x="344.5" y="108" width="120.5" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="404.8" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <rect x="470" y="108" width="120.5" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="530.2" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <rect x="595.5" y="108" width="120.5" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="655.8" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="4" y="186" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Draft experts now</text>
+  <rect x="219" y="160" width="120.5" height="42" rx="5" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="279.2" y="186" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">Skip</text>
+  <rect x="344.5" y="160" width="120.5" height="42" rx="5" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="404.8" y="186" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">Skip</text>
+  <rect x="470" y="160" width="120.5" height="42" rx="5" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="530.2" y="186" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">Skip</text>
+  <rect x="595.5" y="160" width="120.5" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="655.8" y="186" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 210">
+  <text x="4" y="30" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Position</text>
+  <text x="134.5" y="30" font-size="15" fill="#595954" text-anchor="middle">1</text>
+  <text x="186.5" y="30" font-size="15" fill="#595954" text-anchor="middle">2</text>
+  <text x="238.5" y="30" font-size="15" fill="#595954" text-anchor="middle">3</text>
+  <text x="290.5" y="30" font-size="15" fill="#595954" text-anchor="middle">Last</text>
+  <text x="4" y="74" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Attention</text>
+  <text x="4" y="91" font-size="15" fill="#202020" text-anchor="start" font-weight="700">history</text>
+  <rect x="111" y="56" width="47" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="134.5" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <rect x="163" y="56" width="47" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="186.5" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <rect x="215" y="56" width="47" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="238.5" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <rect x="267" y="56" width="47" height="42" rx="5" fill="#e5f2fc" stroke="#075e98"/>
+  <text x="290.5" y="82" font-size="15" fill="#075e98" text-anchor="middle" font-weight="700">Keep</text>
+  <text x="4" y="126" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Draft experts</text>
+  <text x="4" y="143" font-size="15" fill="#202020" text-anchor="start" font-weight="700">before</text>
+  <rect x="111" y="108" width="47" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="134.5" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <rect x="163" y="108" width="47" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="186.5" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <rect x="215" y="108" width="47" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="238.5" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <rect x="267" y="108" width="47" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="290.5" y="134" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+  <text x="4" y="178" font-size="15" fill="#202020" text-anchor="start" font-weight="700">Draft experts</text>
+  <text x="4" y="195" font-size="15" fill="#202020" text-anchor="start" font-weight="700">now</text>
+  <rect x="111" y="160" width="47" height="42" rx="5" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="134.5" y="186" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">Skip</text>
+  <rect x="163" y="160" width="47" height="42" rx="5" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="186.5" y="186" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">Skip</text>
+  <rect x="215" y="160" width="47" height="42" rx="5" fill="#f1f1ee" stroke="#595954" stroke-dasharray="3 3"/>
+  <text x="238.5" y="186" font-size="15" fill="#595954" text-anchor="middle" font-weight="700">Skip</text>
+  <rect x="267" y="160" width="47" height="42" rx="5" fill="#f2eafa" stroke="#6533a0"/>
+  <text x="290.5" y="186" font-size="15" fill="#6533a0" text-anchor="middle" font-weight="700">Run</text>
+</svg>
+</svg>
+<figcaption>An expert is a learned transformation in the decoder. The draft expert layer used to produce outputs for positions that were immediately discarded. Keeping only the last output reduced the helper median from 625 to 585 ms in this six-round screen. The full target still verifies the same positions.</figcaption>
+</figure>
+<p class="source"><a href="../../scripts/nemo_mtp.py">Draft tail calculation</a> · <a href="../../scripts/tests/test_mtp.py">Attention-history regression test</a></p>
+</article>
+
+<article id="results">
+<h2>The same recording returned sooner in every pair</h2>
+<p>We compared a copy of the app installed at the start of the experiment with the optimized build. Each transcribed the same saved 48 kHz WAV twice. We timed the second request on AC power, alternated which build went first, and repeated the six-pair experiment independently.</p>
+<figure>
+<svg class="chart" role="img" aria-labelledby="results-chart-title" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 367.2 224.64" xmlns="http://www.w3.org/2000/svg" version="1.1">
+<title id="results-chart-title">30-second warm request medians. First series, 684 ms prior and 552 ms optimized. Repeat, 693 and 558 ms. All twelve optimized requests were below 585 ms.</title>
+ <title>Warm request time for the same 30-second clip</title>
+
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="results-figure_1">
+  <g id="results-patch_1">
+   <path d="M 0 224.64
+L 367.2 224.64
+L 367.2 0
+L 0 0
+L 0 224.64
+z
+" style="fill: none"/>
+  </g>
+  <g id="results-axes_1">
+   <g id="results-patch_2">
+    <path d="M 113.832 172.9728
+L 345.168 172.9728
+L 345.168 17.9712
+L 113.832 17.9712
+L 113.832 172.9728
+z
+" style="fill: none"/>
+   </g>
+   <g id="results-matplotlib.axis_1">
+    <g id="results-xtick_1">
+     <g id="results-line2d_1">
+      <path d="M 113.832 172.9728
+L 113.832 17.9712
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="results-line2d_2"/>
+     <g id="results-text_1">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="113.832" y="189.989402" transform="rotate(-0 113.832 189.989402)">500</text>
+     </g>
+    </g>
+    <g id="results-xtick_2">
+     <g id="results-line2d_3">
+      <path d="M 182.887522 172.9728
+L 182.887522 17.9712
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="results-line2d_4"/>
+     <g id="results-text_2">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="182.887522" y="189.989402" transform="rotate(-0 182.887522 189.989402)">600</text>
+     </g>
+    </g>
+    <g id="results-xtick_3">
+     <g id="results-line2d_5">
+      <path d="M 251.943045 172.9728
+L 251.943045 17.9712
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="results-line2d_6"/>
+     <g id="results-text_3">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="251.943045" y="189.989402" transform="rotate(-0 251.943045 189.989402)">700</text>
+     </g>
+    </g>
+    <g id="results-xtick_4">
+     <g id="results-line2d_7">
+      <path d="M 320.998567 172.9728
+L 320.998567 17.9712
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="results-line2d_8"/>
+     <g id="results-text_4">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="320.998567" y="189.989402" transform="rotate(-0 320.998567 189.989402)">800</text>
+     </g>
+    </g>
+    <g id="results-text_5">
+     <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="229.5" y="208.490534" transform="rotate(-0 229.5 208.490534)">Warm request time (ms)</text>
+    </g>
+   </g>
+   <g id="results-matplotlib.axis_2">
+    <g id="results-ytick_1">
+     <g id="results-line2d_9"/>
+     <g id="results-text_6">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="107.832" y="55.708123" transform="rotate(-0 107.832 55.708123)">First · prior</text>
+     </g>
+    </g>
+    <g id="results-ytick_2">
+     <g id="results-line2d_10"/>
+     <g id="results-text_7">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="107.832" y="86.401509" transform="rotate(-0 107.832 86.401509)">First · new</text>
+     </g>
+    </g>
+    <g id="results-ytick_3">
+     <g id="results-line2d_11"/>
+     <g id="results-text_8">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="107.832" y="129.372249" transform="rotate(-0 107.832 129.372249)">Repeat · prior</text>
+     </g>
+    </g>
+    <g id="results-ytick_4">
+     <g id="results-line2d_12"/>
+     <g id="results-text_9">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="107.832" y="160.065069" transform="rotate(-0 107.832 160.065069)">Repeat · new</text>
+     </g>
+    </g>
+   </g>
+   <g id="results-line2d_13">
+    <path d="M 238.13194 50.199255
+L 327.213564 50.199255
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #075e98; stroke-width: 2.1; stroke-linecap: round"/>
+   </g>
+   <g id="results-line2d_14">
+    <path d="M 146.288096 80.892642
+L 154.574758 80.892642
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #6533a0; stroke-width: 2.1; stroke-linecap: round"/>
+   </g>
+   <g id="results-line2d_15">
+    <path d="M 242.275272 123.863382
+L 256.776931 123.863382
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #075e98; stroke-width: 2.1; stroke-linecap: round"/>
+   </g>
+   <g id="results-line2d_16">
+    <path d="M 152.503093 154.556768
+L 159.408645 154.556768
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke: #6533a0; stroke-width: 2.1; stroke-linecap: round"/>
+   </g>
+   <g id="results-line2d_17">
+    <path d="M 172.529194 172.9728
+L 172.529194 17.9712
+" clip-path="url(#results-pd551f4d946)" style="fill: none; stroke-dasharray: 2.6,3.9; stroke-dashoffset: 0; stroke: #b43d08; stroke-width: 1.3"/>
+   </g>
+   <g id="results-PathCollection_1">
+    <defs>
+     <path id="results-m14b7f9b0aa" d="M -3.464102 3.464102
+L 3.464102 3.464102
+L 3.464102 -3.464102
+L -3.464102 -3.464102
+z
+" style="stroke: #075e98"/>
+    </defs>
+    <g clip-path="url(#results-pd551f4d946)">
+     <use xlink:href="#results-m14b7f9b0aa" x="240.894161" y="50.199255" style="fill: #075e98; stroke: #075e98"/>
+    </g>
+   </g>
+   <g id="results-text_10">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #075e98" x="240.894161" y="42.199255" transform="rotate(-0 240.894161 42.199255)">684</text>
+   </g>
+   <g id="results-PathCollection_2">
+    <defs>
+     <path id="results-ma0f5c6eb6a" d="M 0 3.464102
+C 0.91869 3.464102 1.799877 3.099102 2.44949 2.44949
+C 3.099102 1.799877 3.464102 0.91869 3.464102 0
+C 3.464102 -0.91869 3.099102 -1.799877 2.44949 -2.44949
+C 1.799877 -3.099102 0.91869 -3.464102 0 -3.464102
+C -0.91869 -3.464102 -1.799877 -3.099102 -2.44949 -2.44949
+C -3.099102 -1.799877 -3.464102 -0.91869 -3.464102 0
+C -3.464102 0.91869 -3.099102 1.799877 -2.44949 2.44949
+C -1.799877 3.099102 -0.91869 3.464102 0 3.464102
+z
+" style="stroke: #6533a0"/>
+    </defs>
+    <g clip-path="url(#results-pd551f4d946)">
+     <use xlink:href="#results-ma0f5c6eb6a" x="149.740872" y="80.892642" style="fill: #6533a0; stroke: #6533a0"/>
+    </g>
+   </g>
+   <g id="results-text_11">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #6533a0" x="149.740872" y="72.892642" transform="rotate(-0 149.740872 72.892642)">552</text>
+   </g>
+   <g id="results-PathCollection_3">
+    <g clip-path="url(#results-pd551f4d946)">
+     <use xlink:href="#results-m14b7f9b0aa" x="247.109158" y="123.863382" style="fill: #075e98; stroke: #075e98"/>
+    </g>
+   </g>
+   <g id="results-text_12">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #075e98" x="247.109158" y="115.863382" transform="rotate(-0 247.109158 115.863382)">693</text>
+   </g>
+   <g id="results-PathCollection_4">
+    <g clip-path="url(#results-pd551f4d946)">
+     <use xlink:href="#results-ma0f5c6eb6a" x="153.884203" y="154.556768" style="fill: #6533a0; stroke: #6533a0"/>
+    </g>
+   </g>
+   <g id="results-text_13">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #6533a0" x="153.884203" y="146.556768" transform="rotate(-0 153.884203 146.556768)">558</text>
+   </g>
+   <g id="results-text_14">
+    <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #b43d08" x="176.672525" y="30.945817" transform="rotate(-0 176.672525 30.945817)">585 ms</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="results-pd551f4d946">
+   <rect x="113.832" y="17.9712" width="231.336" height="155.0016"/>
+  </clipPath>
+ </defs>
+</svg>
+<figcaption>Markers show medians. Lines span the fastest to slowest warm request in each six-pair series. Paired reductions were 19.5% and 19.4%. The five-second clip also improved, from 188 to 161 ms. Peak helper memory on the 30-second clip rose from 27.6 to 27.8 GB.</figcaption>
+</figure>
+<p class="detail"><strong>What “same accuracy” meant here.</strong> Exact text, including case and punctuation, matched on 12 frozen recordings and five noise, volume, echo or padding variants. The 87-word project update had zero word errors. Both builds still made 506 word errors against the 499-word reference on the 200-second stress clip.</p>
+<p class="detail">The prototype that originally measured 585 ms took 603 ms on a later rerun. The final decoder took 563 ms in that same comparison and won all six pairs. The installed build later returned the exact project update in a single 546 ms warm check. Each earlier experiment has its own baseline, so its savings cannot be added to these trials.</p>
+<p class="source"><a href="../performance.md#reducing-warm-latency-below-585-ms-on-the-30-second-project-update">Trial ranges and installation record</a> · <a href="../../.agents/skills/optimize-nemo-inference/SKILL.md">Silent comparison procedure</a></p>
+</article>
+
+<article id="experiments">
+<h2>Which apparent shortcuts held up?</h2>
+<p>We tried longer drafts, alternative arithmetic and different GPU settings. A change could win a short test by moving work into startup or by changing the words. These experiments show why we checked the whole signed app against identical recordings.</p>
+<figure>
+<svg class="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="experiments-title experiments-desc" style="--wide-ratio:720/329; --narrow-ratio:318/485">
+<title id="experiments-title">Four alternatives and their measured outcomes</title><desc id="experiments-desc">Moving the SciPy import raised total startup time. Longer drafts brought no gain. Padded expert matrices changed long transcripts. A larger Metal command buffer lost on the signed app.</desc>
+<svg class="wide" aria-hidden="true" width="100%" height="100%" viewBox="0 0 720 329">
+  <line x1="4" y1="2" x2="716" y2="2" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="25" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">First request</text>
+  <text x="159" y="25" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Import SciPy at startup</text>
+  <text x="159" y="49" font-size="15" fill="#595954" text-anchor="start">Load plus first request rose from 2.76 to 2.84 s. Removing the import improved the</text>
+  <text x="159" y="69" font-size="15" fill="#595954" text-anchor="start">full path.</text>
+  <line x1="4" y1="99" x2="716" y2="99" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="122" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">Draft length</text>
+  <text x="159" y="122" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Allow 12 or 16 proposals</text>
+  <text x="159" y="146" font-size="15" fill="#595954" text-anchor="start">Warm requests took 669 and 677 ms. The eight-proposal control took 669 ms.</text>
+  <line x1="4" y1="176" x2="716" y2="176" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="199" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">Expert math</text>
+  <text x="159" y="199" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Pad expert matrices</text>
+  <text x="159" y="223" font-size="15" fill="#595954" text-anchor="start">Isolated kernels ran faster. Long transcripts changed.</text>
+  <line x1="4" y1="253" x2="716" y2="253" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="276" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">Metal queue</text>
+  <text x="159" y="276" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Set a 256 MB command buffer</text>
+  <text x="159" y="300" font-size="15" fill="#595954" text-anchor="start">The signed build took 616 ms against 603 ms with the default.</text>
+</svg>
+<svg class="narrow" aria-hidden="true" width="100%" height="100%" viewBox="0 0 318 485">
+  <line x1="4" y1="2" x2="314" y2="2" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="25" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">First request</text>
+  <text x="4" y="49" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Import SciPy at startup</text>
+  <text x="4" y="73" font-size="15" fill="#595954" text-anchor="start">Load plus first request rose from 2.76 to 2.84</text>
+  <text x="4" y="93" font-size="15" fill="#595954" text-anchor="start">s. Removing the import improved the full path.</text>
+  <line x1="4" y1="123" x2="314" y2="123" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="146" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">Draft length</text>
+  <text x="4" y="170" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Allow 12 or 16 proposals</text>
+  <text x="4" y="194" font-size="15" fill="#595954" text-anchor="start">Warm requests took 669 and 677 ms. The</text>
+  <text x="4" y="214" font-size="15" fill="#595954" text-anchor="start">eight-proposal control took 669 ms.</text>
+  <line x1="4" y1="244" x2="314" y2="244" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="267" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">Expert math</text>
+  <text x="4" y="291" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Pad expert matrices</text>
+  <text x="4" y="315" font-size="15" fill="#595954" text-anchor="start">Isolated kernels ran faster. Long transcripts</text>
+  <text x="4" y="335" font-size="15" fill="#595954" text-anchor="start">changed.</text>
+  <line x1="4" y1="365" x2="314" y2="365" stroke="#d6d6ce" stroke-width="1"/>
+  <text x="4" y="388" font-size="15" fill="#6533a0" text-anchor="start" font-weight="700">Metal queue</text>
+  <text x="4" y="412" font-size="16" fill="#202020" text-anchor="start" font-weight="700">Set a 256 MB command buffer</text>
+  <text x="4" y="436" font-size="15" fill="#595954" text-anchor="start">The signed build took 616 ms against 603 ms</text>
+  <text x="4" y="456" font-size="15" fill="#595954" text-anchor="start">with the default.</text>
+</svg>
+</svg>
+<figcaption>A fused recurrent scan improved the text on one 200-second case and changed the baseline output. That calls for a separate accuracy study. Sorting expert routes, precomputing scale factors and a specialized projection kernel also missed the whole-request speed target. Asynchronous cache repair helped in some screens but added no gain to the final last-position calculation.</figcaption>
+</figure>
+<p class="source"><a href="../target-verification-m5-max.md#experiments">Decoder experiments and accuracy checks</a> · <a href="../performance.md#first-request-after-model-loading">Cold-start comparison</a></p>
+</article>
+
+<article id="next">
+<h2>Profile the target verifier first</h2>
+<p>In seven warm profiles of the earlier full-vocabulary decoder, verification was the largest stage of a 698 ms request. Drafting came second. These measurements explain where the session started. Repeat the breakdown on the installed decoder before choosing a change.</p>
+<figure>
+<svg class="chart" role="img" aria-labelledby="next-chart-title" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 367.2 234" xmlns="http://www.w3.org/2000/svg" version="1.1">
+<title id="next-chart-title">Earlier stage medians in milliseconds: resample 12, encode and prepare prompt 29, prefill 136, draft 187, verify 291, repair caches 38.</title>
+ <title>Stage medians in the earlier full-vocabulary decoder</title>
+
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="next-figure_1">
+  <g id="next-patch_1">
+   <path d="M 0 234
+L 367.2 234
+L 367.2 0
+L 0 0
+L 0 234
+z
+" style="fill: none"/>
+  </g>
+  <g id="next-axes_1">
+   <g id="next-patch_2">
+    <path d="M 124.848 180.18
+L 345.168 180.18
+L 345.168 18.72
+L 124.848 18.72
+L 124.848 180.18
+z
+" style="fill: none"/>
+   </g>
+   <g id="next-matplotlib.axis_1">
+    <g id="next-xtick_1">
+     <g id="next-line2d_1">
+      <path d="M 124.848 180.18
+L 124.848 18.72
+" clip-path="url(#next-pab34fcd874)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="next-line2d_2"/>
+     <g id="next-text_1">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="124.848" y="197.196602" transform="rotate(-0 124.848 197.196602)">0</text>
+     </g>
+    </g>
+    <g id="next-xtick_2">
+     <g id="next-line2d_3">
+      <path d="M 191.611636 180.18
+L 191.611636 18.72
+" clip-path="url(#next-pab34fcd874)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="next-line2d_4"/>
+     <g id="next-text_2">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="191.611636" y="197.196602" transform="rotate(-0 191.611636 197.196602)">100</text>
+     </g>
+    </g>
+    <g id="next-xtick_3">
+     <g id="next-line2d_5">
+      <path d="M 258.375273 180.18
+L 258.375273 18.72
+" clip-path="url(#next-pab34fcd874)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="next-line2d_6"/>
+     <g id="next-text_3">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="258.375273" y="197.196602" transform="rotate(-0 258.375273 197.196602)">200</text>
+     </g>
+    </g>
+    <g id="next-xtick_4">
+     <g id="next-line2d_7">
+      <path d="M 325.138909 180.18
+L 325.138909 18.72
+" clip-path="url(#next-pab34fcd874)" style="fill: none; stroke: #d6d6ce; stroke-width: 0.7; stroke-linecap: square"/>
+     </g>
+     <g id="next-line2d_8"/>
+     <g id="next-text_4">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="325.138909" y="197.196602" transform="rotate(-0 325.138909 197.196602)">300</text>
+     </g>
+    </g>
+    <g id="next-text_5">
+     <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: middle; fill: #595954" x="235.008" y="215.697734" transform="rotate(-0 235.008 215.697734)">Median stage time (ms)</text>
+    </g>
+   </g>
+   <g id="next-matplotlib.axis_2">
+    <g id="next-ytick_1">
+     <g id="next-line2d_9"/>
+     <g id="next-text_6">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="118.848" y="37.751075" transform="rotate(-0 118.848 37.751075)">Resample</text>
+     </g>
+    </g>
+    <g id="next-ytick_2">
+     <g id="next-line2d_10"/>
+     <g id="next-text_7">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="118.848" y="64.634192" transform="rotate(-0 118.848 64.634192)">Encode + prep</text>
+     </g>
+    </g>
+    <g id="next-ytick_3">
+     <g id="next-line2d_11"/>
+     <g id="next-text_8">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="118.848" y="91.517309" transform="rotate(-0 118.848 91.517309)">Prefill</text>
+     </g>
+    </g>
+    <g id="next-ytick_4">
+     <g id="next-line2d_12"/>
+     <g id="next-text_9">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="118.848" y="118.400426" transform="rotate(-0 118.848 118.400426)">Draft tokens</text>
+     </g>
+    </g>
+    <g id="next-ytick_5">
+     <g id="next-line2d_13"/>
+     <g id="next-text_10">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="118.848" y="145.283543" transform="rotate(-0 118.848 145.283543)">Verify drafts</text>
+     </g>
+    </g>
+    <g id="next-ytick_6">
+     <g id="next-line2d_14"/>
+     <g id="next-text_11">
+      <text style="font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: end; fill: #202020" x="118.848" y="172.166659" transform="rotate(-0 118.848 172.166659)">Repair caches</text>
+     </g>
+    </g>
+   </g>
+   <g id="next-patch_3">
+    <path d="M 124.848 26.059091
+L 132.859636 26.059091
+L 132.859636 38.425325
+L 124.848 38.425325
+z
+" clip-path="url(#next-pab34fcd874)" style="fill: #075e98"/>
+   </g>
+   <g id="next-patch_4">
+    <path d="M 124.848 52.942208
+L 144.209455 52.942208
+L 144.209455 65.308442
+L 124.848 65.308442
+z
+" clip-path="url(#next-pab34fcd874)" style="fill: #075e98"/>
+   </g>
+   <g id="next-patch_5">
+    <path d="M 124.848 79.825325
+L 215.646545 79.825325
+L 215.646545 92.191558
+L 124.848 92.191558
+z
+" clip-path="url(#next-pab34fcd874)" style="fill: #6533a0"/>
+   </g>
+   <g id="next-patch_6">
+    <path d="M 124.848 106.708442
+L 249.696 106.708442
+L 249.696 119.074675
+L 124.848 119.074675
+z
+" clip-path="url(#next-pab34fcd874)" style="fill: #6533a0"/>
+   </g>
+   <g id="next-patch_7">
+    <path d="M 124.848 133.591558
+L 319.130182 133.591558
+L 319.130182 145.957792
+L 124.848 145.957792
+z
+" clip-path="url(#next-pab34fcd874)" style="fill: #b43d08"/>
+   </g>
+   <g id="next-patch_8">
+    <path d="M 124.848 160.474675
+L 150.218182 160.474675
+L 150.218182 172.840909
+L 124.848 172.840909
+z
+" clip-path="url(#next-pab34fcd874)" style="fill: #6533a0"/>
+   </g>
+   <g id="next-text_12">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #075e98" x="136.865455" y="36.008809" transform="rotate(-0 136.865455 36.008809)">12</text>
+   </g>
+   <g id="next-text_13">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #075e98" x="148.215273" y="62.891926" transform="rotate(-0 148.215273 62.891926)">29</text>
+   </g>
+   <g id="next-text_14">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #6533a0" x="219.652364" y="89.775043" transform="rotate(-0 219.652364 89.775043)">136</text>
+   </g>
+   <g id="next-text_15">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #6533a0" x="253.701818" y="116.65816" transform="rotate(-0 253.701818 116.65816)">187</text>
+   </g>
+   <g id="next-text_16">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #b43d08" x="323.136" y="143.541277" transform="rotate(-0 323.136 143.541277)">291</text>
+   </g>
+   <g id="next-text_17">
+    <text style="font-weight: 700; font-size: 14.5px; font-family: 'DejaVu Sans', 'Bitstream Vera Sans', 'Computer Modern Sans Serif', 'Lucida Grande', 'Verdana', 'Geneva', 'Lucid', 'Arial', 'Helvetica', 'Avant Garde', sans-serif; text-anchor: start; fill: #6533a0" x="154.224" y="170.424394" transform="rotate(-0 154.224 170.424394)">38</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="next-pab34fcd874">
+   <rect x="124.848" y="18.72" width="220.32" height="161.46"/>
+  </clipPath>
+ </defs>
+</svg>
+<figcaption>Thirty-second project update. Finishing the text took less than 1 ms. An independent shortlist profile measured 280 ms of target verification. In isolated expert-layer replays, routed expert projections and activation took 145 ms. These separate measurements use different timing boundaries.</figcaption>
+</figure>
+<ol class="nextlist">
+<li><b>Longer dictations</b> Time the installed verifier and its expert projections where the code already waits for tokens. Inserting a wait after each GPU operation changes the schedule being measured. Another 5% on a 555 ms request means saving about 28 ms. The target vocabulary projection took 16.5 ms in the earlier profile, which makes the larger expert computations a better first lead.</li>
+<li><b>After a pause</b> Compare the first short request after a real idle interval with an immediate repeat. A cold GPU, model reload or first-use import calls for a different fix than slow token generation.</li>
+<li><b>When the app still feels slow</b> Read finalization, queueing, request and paste-dispatch timings from ordinary dictation. Recipient insertion has its own clock. Use the frozen files to check decoder changes against exact text.</li>
+</ol>
+<p class="source"><a href="../target-verification-m5-max.md">Expert-layer profile and rejected experiments</a> · <a href="../../scripts/latency-report.py">Live latency report</a></p>
+</article>
+</main>
+</body>
+</html>
