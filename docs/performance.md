@@ -1,5 +1,8 @@
 # Performance on the M5 Max
 
+For an illustrated walkthrough of the installed MLX decoder, its accuracy checks,
+and the next stages to profile, see [How Nemo turns speech into text](dictation-performance/index.html).
+
 For the versioned synthetic speech corpus and repeatable runtime/model comparison
 harness, see [speech benchmarking](benchmarking.md). It reports per-duration HTTP
 latency and word error rate separately from real installed-app delivery timings.
@@ -457,6 +460,41 @@ baseline. Its installed executable had SHA-256
 `1f699d7e88e3b333b54ffe9001567681adaa10ba642099955e85874f4dd364ce`.
 The acoustic acceptance record is `artifacts/performance/first-request-REO5q7/a3/roundtrip/results.json`;
 the wake interval and cancellation check is `two-seconds.log` in the same run.
+
+### Recording-only GPU warming on nemo-speech
+
+We kept the two-second GPU wakeup specific to resident MLX. On November 19,
+2026, we tested the default `nemo-speech` Metal backend on the 128 GB M5 Max
+running macOS 26.5.2 on AC power. We looked for at least a 5% median reduction
+in Stop-to-text time, with warming faster in at least five of six pairs.
+None of the tested intervals met both criteria.
+
+| Speech | Idle before recording | Pulse interval during recording | Median paired change in Stop-to-text | Pairs faster |
+| ---: | ---: | ---: | ---: | ---: |
+| 30 s | 8 s | 2 s | 0.3% faster | 3/6 |
+| 30 s | 190 s | 2 s | 5.2% slower | 1/4 |
+| 5 s | 6 s | 1 s | 0.6% faster | 4/6 |
+| 5 s | 6 s | 2 s | 1.5% faster | 4/6 |
+
+Each pair used the same resident decoder and frozen recording, with and without
+pulses. The test server submitted a 32-thread Metal kernel that wrote 128 bytes
+on its own queue at recording start and at the listed interval. The timer ran
+from captured PCM being ready at simulated Stop through WAV conversion, native
+inference, text formatting and a private macOS pasteboard write. This excludes
+model loading, physical microphone shutdown and the foreground app's paste.
+
+One long-idle pair went from 4,426 ms to 1,117 ms. Median system-wide GPU use
+during those simulated recordings was 55% without warming and 12.5% with it.
+The other three pairs favored the control. We retained all four and ended the
+comparison once five wins in six pairs was impossible. A separate eight-second
+screen with just two pulses, nominally 50 ms or one second apart, also missed
+the threshold on both clips.
+
+All 74 timed transcripts matched the shipped native decoder byte for byte and
+had zero word errors against the two reference recordings. The measurements
+establish no useful maximum pulse interval for this backend on this machine.
+The trial data include each control, its matched candidate and the measured
+gap between the last pulse and replay. [Download the trial timings (CSV)](native-gpu-warming-m5-max.csv).
 
 ### Ranked latency opportunities on this Mac
 
