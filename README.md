@@ -16,7 +16,7 @@ Nemo runs one of two local inference engines, chosen in `config.toml` without a 
 | `backend` | What it is | Needs | Memory while loaded |
 | --- | --- | --- | --- |
 | `nemo-speech` | The default: the bundled NeMo-Speech.cpp runtime. Runs after a standard install. | Nothing extra | about 20 GB |
-| `mlx-audio` | Opt-in: MLX-Audio with speculative decoding. **1.50–1.65x faster** on 5–100 second dictations, same word errors. | `uv`, Python 3.12+, a second 21.6 GB download | about 27 GB |
+| `mlx-audio` | Opt-in: MLX-Audio with speculative decoding. **1.50–1.65x faster** on 5–100 second dictations, same word errors. | `uv`, Python 3.12+, 21.6 GB of MLX weights | about 27 GB |
 
 `nemo-speech` is the default. `mlx-audio` is opt-in:
 [set it up](docs/mlx-audio-setup.md) with `nemo backend setup mlx-audio`, then select it
@@ -26,7 +26,7 @@ Numbers are from the
 
 ## Install
 
-You need **macOS 26 or newer**, an Apple Silicon Mac, [Rust](https://rustup.rs), and [Homebrew](https://brew.sh). Allow **21.35 GB** for the model download, plus space for build files. The loaded model used about **20 GB of memory** in our [M5 Max tests](docs/performance.md), or about 27 GB with the optional faster engine.
+You need **macOS 26 or newer**, an Apple Silicon Mac, [Rust](https://rustup.rs), and [Homebrew](https://brew.sh). Allow about **22 GB** for either model download, plus space for build files.
 
 Install Apple’s Command Line Tools if you haven’t already:
 
@@ -38,12 +38,47 @@ Finish that installer, then open Terminal and run:
 
 ```sh
 cargo install --locked --git https://github.com/nu-sync/nemo.git nemo-dictate
+```
+
+Choose one of the following setup paths before opening Nemo.
+
+### Default engine
+
+```sh
 nemo
 ```
 
 The first `nemo` run installs the build dependencies through Homebrew, builds the inference runtime, and creates `~/Applications/Nemo.app`. Nemo appears as a **dot in the menu bar** and automatically downloads the Nemotron model. Open its menu to check the download.
 
 Setup happens once. Later, run `nemo` or open **Nemo** from `~/Applications`.
+
+### MLX-Audio only
+
+Install [`uv`](https://docs.astral.sh/uv/) and make sure `python3 --version` reports 3.12 or newer. Run the following before opening Nemo for the first time:
+
+```sh
+nemo install
+uv sync --locked --script "$HOME/Applications/Nemo.app/Contents/Resources/runtime/mlx-serve.py"
+nemo backend setup mlx-audio
+nemo backend use mlx-audio
+```
+
+Open `~/Library/Application Support/Nemo/config.toml` and replace the existing `model` line with:
+
+```toml
+model = "/dev/null"
+```
+
+This setting skips the automatic download of the default GGUF weights. MLX-Audio loads the weights downloaded by `nemo backend setup mlx-audio`.
+
+```sh
+open -a "$HOME/Applications/Nemo.app"
+nemo backend list
+```
+
+Look for `* mlx-audio: weights ready`. The app bundle includes both runtimes. On a fresh install with these steps, the list shows the default weights as `not provisioned`. The menu bar may report **Transcription blocked: model missing** because its readiness check looks for GGUF weights. Use `nemo backend list` to check the MLX weights.
+
+If you later switch to `nemo-speech`, remove the `model` line to restore its default download path.
 
 ## Dictate
 
