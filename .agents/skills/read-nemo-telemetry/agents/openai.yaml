@@ -1,0 +1,4 @@
+interface:
+  display_name: "Read Nemo Telemetry"
+  short_description: "Read the dictation log to find failures, slow steps and regressions"
+  default_prompt: "Use $read-nemo-telemetry to summarize how recent Nemo dictations went, name the most common failure and the slowest step, and propose one improvement."

@@ -34,7 +34,7 @@ def latency_report(lines):
         if kind == "delivery" and valid_number(event.get("stop_to_dispatch_ms")):
             deliveries.append(event["stop_to_dispatch_ms"])
     return {
-        "scope": "request_ms is HTTP inference; stop_to_dispatch_ms is observed stop-to-dispatch, NOT visible insertion; events have no correlation IDs and are not joined",
+        "scope": "request_ms is HTTP inference; stop_to_dispatch_ms is observed stop-to-dispatch, NOT visible insertion; this report does not join events; telemetry-report.py joins them by dictation ID",
         "failures": failures,
         "transcriptions": {"n": len(transcriptions),
                            "audio_seconds": distribution([event["audio_seconds"] for event in transcriptions]),
