@@ -48,6 +48,16 @@ impl Engines {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn fake(primary: Backend, fallback: Option<Backend>) -> Self {
+        Self {
+            primary,
+            fallback,
+            demoted: None,
+            status: Status::default(),
+        }
+    }
+
     /// Whether an engine is loaded and answering.
     pub fn loaded(&self) -> bool {
         self.primary.loaded()
@@ -123,11 +133,12 @@ impl Engines {
     }
 
     /// A canceled request is the user's decision, not an engine failure, and the included
-    /// engine would be asked to do work nobody wants.
+    /// engine would be asked to do work nobody wants. Audio with nothing to transcribe is
+    /// no failure either: the included engine would hear the same silence.
     fn can_fall_back(&self, canceled: &AtomicBool, error: &anyhow::Error) -> bool {
         should_fall_back(
             self.fallback.is_some(),
-            canceled.load(Ordering::Acquire),
+            canceled.load(Ordering::Acquire) || !crate::backend::at_fault(error),
             &error.to_string(),
         )
     }
@@ -170,7 +181,7 @@ impl Engines {
 
 /// The whole decision, kept separate from the process handling so every combination can
 /// be checked without spawning an engine.
-fn should_fall_back(has_fallback: bool, canceled: bool, error: &str) -> bool {
+pub(crate) fn should_fall_back(has_fallback: bool, canceled: bool, error: &str) -> bool {
     has_fallback && !canceled && !error.contains("Canceled")
 }
 
@@ -210,6 +221,22 @@ mod tests {
             status: Status::default(),
         };
         assert!(!engines.can_fall_back(&canceled, &error));
+    }
+
+    #[test]
+    fn a_dictation_with_no_speech_keeps_the_selected_engine() {
+        use crate::backend::fake;
+        let (primary, server) = fake::engine(fake::NO_SPEECH);
+        let (fallback, _unused) = fake::engine(fake::NO_SPEECH);
+        let mut engines = Engines::fake(primary, Some(fallback));
+        let error = engines
+            .transcribe(fake::wav(), &AtomicBool::new(false), &[])
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.to_string(), "No speech recognized");
+        assert!(engines.demoted.is_none());
+        assert!(engines.status.lock().unwrap().is_none());
+        assert!(engines.loaded(), "the selected engine stays loaded");
     }
 
     #[test]

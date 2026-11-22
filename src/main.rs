@@ -227,7 +227,10 @@ enum CancelAction {
     None,
     DiscardRecording,
     WaitMicrophone,
-    WaitWorker,
+    /// The audio or delivery thread is finishing; the engine is not involved.
+    WaitThread,
+    /// The work may be running on the engine, so the engine is stopped under it.
+    StopWorker,
 }
 
 enum State {
@@ -269,16 +272,16 @@ impl State {
                 Completion::Microphone,
                 CancelAction::WaitMicrophone,
             ),
-            Self::Working { id, canceled, kind } => (
-                *id,
-                canceled.clone(),
-                if *kind == WorkKind::FinalizeAudio {
-                    Completion::Audio
-                } else {
-                    Completion::Worker
-                },
-                CancelAction::WaitWorker,
-            ),
+            Self::Working { id, canceled, kind } => {
+                let (awaiting, action) = match kind {
+                    WorkKind::FinalizeAudio => (Completion::Audio, CancelAction::WaitThread),
+                    WorkKind::Deliver => (Completion::Worker, CancelAction::WaitThread),
+                    WorkKind::Warm | WorkKind::Download | WorkKind::Transcribe => {
+                        (Completion::Worker, CancelAction::StopWorker)
+                    }
+                };
+                (*id, canceled.clone(), awaiting, action)
+            }
         };
         canceled.store(true, Ordering::Release);
         *self = Self::Canceling {
@@ -342,6 +345,11 @@ impl State {
         } else {
             false
         }
+    }
+
+    /// Whether an operation is under way, which holds off the idle unload.
+    fn busy(&self) -> bool {
+        !matches!(self, Self::Idle)
     }
 
     fn activity(&self) -> readiness::Activity {
@@ -709,10 +717,135 @@ fn start_recording(
     });
 }
 
+/// The one thread that owns the engine: it runs jobs in order and unloads the model
+/// after `idle_timeout` without one. `report` returns false once the event loop is gone.
+fn worker(
+    receiver: mpsc::Receiver<Job>,
+    mut backend: engines::Engines,
+    mut downloader: Option<download::Downloader>,
+    idle_timeout: Duration,
+    preview: bool,
+    busy: Arc<AtomicBool>,
+    report: impl Fn(Event) -> bool,
+) {
+    let mut gpu_session = Weak::<audio::RecordingPreview>::new();
+    loop {
+        let received = if gpu_session.strong_count() > 0 {
+            match receiver.recv_timeout(Duration::from_secs(1)) {
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    Ok(Job::WakeRecordingGpu(gpu_session.clone()))
+                }
+                other => other,
+            }
+        } else if !idle_timeout.is_zero() && backend.loaded() {
+            receiver.recv_timeout(idle_timeout)
+        } else {
+            receiver
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+        };
+        match received {
+            Ok(job) => {
+                let (id, result) = match job {
+                    Job::WakeRecordingGpu(session) => {
+                        gpu_session = if session.strong_count() > 0 && backend.wake_recording_gpu()
+                        {
+                            if preview && let Some(recording) = session.upgrade() {
+                                backend.start_preview(&recording);
+                            }
+                            session
+                        } else {
+                            Weak::new()
+                        };
+                        continue;
+                    }
+                    Job::Prepare(canceled) => {
+                        if let Err(error) = backend.ready(&canceled) {
+                            eprintln!("Model preparation failed: {error:#}");
+                            if backend::at_fault(&error) {
+                                backend.unload();
+                            }
+                        }
+                        continue;
+                    }
+                    Job::Warm(id, canceled) => {
+                        (id, backend.ready(&canceled).map(|_| Outcome::ModelLoaded))
+                    }
+                    Job::Download(id, canceled) => {
+                        backend.unload();
+                        let result = match &mut downloader {
+                            Some(downloader) => downloader.download(&canceled),
+                            None => model::Store::managed()
+                    .verify_state(&canceled)
+                    .and_then(|state| match state.is_usable() {
+                        true => Ok(()),
+                        false => anyhow::bail!(
+                            "{}",
+                            state.reason().unwrap_or_else(|| "weights unusable".into())
+                        ),
+                    }).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
+                        };
+                        if downloader
+                            .as_ref()
+                            .is_some_and(download::Downloader::retired)
+                        {
+                            downloader.take();
+                        }
+                        (id, result.map(|_| Outcome::ModelDownloaded))
+                    }
+                    Job::Transcribe(id, wav, canceled, stopped, hint) => {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "inference_started",
+                                "stop_to_inference_ms": stopped.elapsed().as_secs_f64() * 1000.0,
+                            })
+                        );
+                        (
+                            id,
+                            backend
+                                .transcribe(wav, &canceled, &hint)
+                                .map(|text| Outcome::Transcript(text, stopped)),
+                        )
+                    }
+                };
+                if result.as_ref().is_err_and(backend::at_fault) {
+                    backend.unload();
+                }
+                if !report(Event::Finished(id, result)) {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !busy.load(Ordering::Acquire) && backend.unload() {
+                    report(Event::WorkerUnloaded);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+/// Stop the engine under canceled work. The launch preload may be the job the stop lands
+/// on, so it is canceled too: the worker then sees a cancel, not a broken engine.
+fn stop_worker(process: &backend::Process, preload_canceled: &AtomicBool) {
+    preload_canceled.store(true, Ordering::Release);
+    process.stop();
+}
+
+/// What a finished cancellation reports. A cancel can arrive after the paste happened.
+fn canceled_status(result: &Result<Outcome>) -> &'static str {
+    if matches!(result, Ok(Outcome::Delivered)) {
+        "Transcript delivered"
+    } else {
+        "Canceled"
+    }
+}
+
 fn run(mut config: Config) -> Result<()> {
     let server = control::Server::bind()?;
     let store = model::Store::managed();
-    let mut downloader = if config.model != store.decoder() || store.ready() {
+    let downloader = if config.model != store.decoder() || store.ready() {
         None
     } else {
         Some(download::Downloader::spawn(model::DEFAULT_PROFILE)?)
@@ -882,109 +1015,25 @@ fn run(mut config: Config) -> Result<()> {
     });
 
     let process = backend::Process::default();
-    let mut backend =
-        engines::Engines::new(config.clone(), process.clone(), engine_status.clone())?;
+    let backend = engines::Engines::new(config.clone(), process.clone(), engine_status.clone())?;
     let (jobs, receiver) = mpsc::channel();
     let proxy = event_loop.create_proxy();
     let idle_timeout = Duration::from_secs(config.idle_unload_seconds);
     let config_preview_enabled = config.mtp_draft() > 0;
+    // Set while the event loop is anything but idle, so the idle timer cannot unload the
+    // model in the middle of a dictation that outlasts it.
+    let busy = Arc::new(AtomicBool::new(false));
+    let worker_busy = busy.clone();
     thread::spawn(move || {
-        let mut gpu_session = Weak::<audio::RecordingPreview>::new();
-        loop {
-            let received = if gpu_session.strong_count() > 0 {
-                match receiver.recv_timeout(Duration::from_secs(1)) {
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        Ok(Job::WakeRecordingGpu(gpu_session.clone()))
-                    }
-                    other => other,
-                }
-            } else if !idle_timeout.is_zero() && backend.loaded() {
-                receiver.recv_timeout(idle_timeout)
-            } else {
-                receiver
-                    .recv()
-                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-            };
-            match received {
-                Ok(job) => {
-                    let (id, result) = match job {
-                        Job::WakeRecordingGpu(session) => {
-                            gpu_session = if session.strong_count() > 0
-                                && backend.wake_recording_gpu()
-                            {
-                                if config_preview_enabled && let Some(recording) = session.upgrade()
-                                {
-                                    backend.start_preview(&recording);
-                                }
-                                session
-                            } else {
-                                Weak::new()
-                            };
-                            continue;
-                        }
-                        Job::Prepare(canceled) => {
-                            if let Err(error) = backend.ready(&canceled) {
-                                eprintln!("Model preparation failed: {error:#}");
-                                backend.unload();
-                            }
-                            continue;
-                        }
-                        Job::Warm(id, canceled) => {
-                            (id, backend.ready(&canceled).map(|_| Outcome::ModelLoaded))
-                        }
-                        Job::Download(id, canceled) => {
-                            backend.unload();
-                            let result = match &mut downloader {
-                                Some(downloader) => downloader.download(&canceled),
-                                None => model::Store::managed()
-                        .verify_state(&canceled)
-                        .and_then(|state| match state.is_usable() {
-                            true => Ok(()),
-                            false => anyhow::bail!(
-                                "{}",
-                                state.reason().unwrap_or_else(|| "weights unusable".into())
-                            ),
-                        }).map_err(|error| error.context("Repair missing or damaged weights with `nemo model download`, then reopen Nemo")),
-                            };
-                            if downloader
-                                .as_ref()
-                                .is_some_and(download::Downloader::retired)
-                            {
-                                downloader.take();
-                            }
-                            (id, result.map(|_| Outcome::ModelDownloaded))
-                        }
-                        Job::Transcribe(id, wav, canceled, stopped, hint) => {
-                            eprintln!(
-                                "{}",
-                                serde_json::json!({
-                                    "event": "inference_started",
-                                    "stop_to_inference_ms": stopped.elapsed().as_secs_f64() * 1000.0,
-                                })
-                            );
-                            (
-                                id,
-                                backend
-                                    .transcribe(wav, &canceled, &hint)
-                                    .map(|text| Outcome::Transcript(text, stopped)),
-                            )
-                        }
-                    };
-                    if result.is_err() {
-                        backend.unload();
-                    }
-                    if proxy.send_event(Event::Finished(id, result)).is_err() {
-                        break;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if backend.unload() {
-                        let _ = proxy.send_event(Event::WorkerUnloaded);
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
+        worker(
+            receiver,
+            backend,
+            downloader,
+            idle_timeout,
+            config_preview_enabled,
+            worker_busy,
+            |event| proxy.send_event(event).is_ok(),
+        )
     });
 
     let proxy = event_loop.create_proxy();
@@ -1021,6 +1070,7 @@ fn run(mut config: Config) -> Result<()> {
             None => "No microphone available".into(),
         });
 
+        busy.store(state.busy(), Ordering::Release);
         let recording = matches!(state, State::Recording { .. });
         toggle_item.set_text(if recording {
             "Stop recording".into()
@@ -1094,6 +1144,7 @@ fn run(mut config: Config) -> Result<()> {
             }
         };
     let store = model::Store::managed();
+    let preload_canceled = Arc::new(AtomicBool::new(false));
     match startup_action(
         &config,
         bootstrap::bundled(),
@@ -1101,7 +1152,7 @@ fn run(mut config: Config) -> Result<()> {
         store.ready(),
     ) {
         Some("prepare") => {
-            let _ = jobs.send(Job::Prepare(Arc::new(AtomicBool::new(false))));
+            let _ = jobs.send(Job::Prepare(preload_canceled.clone()));
         }
         Some(action) => {
             let _ = event_loop
@@ -1361,7 +1412,7 @@ fn run(mut config: Config) -> Result<()> {
             }
             TaoEvent::UserEvent(Event::Finished(id, result)) => {
                 if state.finish_cancellation(id, Completion::Worker) {
-                    set_status("Canceled");
+                    set_status(canceled_status(&result));
                 }
                 if let State::Working { id: current, canceled, kind: WorkKind::Warm | WorkKind::Download | WorkKind::Transcribe | WorkKind::Deliver } = &state
                     && *current == id
@@ -1469,10 +1520,11 @@ fn run(mut config: Config) -> Result<()> {
                     .spawn();
             }
             "cancel" => match state.request_cancel() {
-                CancelAction::WaitWorker => {
-                    process.stop();
+                CancelAction::StopWorker => {
+                    stop_worker(&process, &preload_canceled);
                     set_status("Canceling");
                 }
+                CancelAction::WaitThread => set_status("Canceling"),
                 CancelAction::DiscardRecording => {
                     output::sound("Pop");
                     set_status("Canceled");
@@ -1691,6 +1743,25 @@ mod indicator_tests {
     }
 
     #[test]
+    fn cancel_stops_the_engine_only_under_work_that_runs_on_it() {
+        let cancel = |kind| {
+            State::Working {
+                id: 1,
+                canceled: Arc::new(AtomicBool::new(false)),
+                kind,
+            }
+            .request_cancel()
+        };
+        for kind in [WorkKind::Warm, WorkKind::Download, WorkKind::Transcribe] {
+            assert!(matches!(cancel(kind), CancelAction::StopWorker));
+        }
+        // The worker is not serving these, so a loaded model survives the cancel.
+        for kind in [WorkKind::FinalizeAudio, WorkKind::Deliver] {
+            assert!(matches!(cancel(kind), CancelAction::WaitThread));
+        }
+    }
+
+    #[test]
     fn only_transcription_shows_a_processing_indicator() {
         let state = |kind| State::Working {
             id: 1,
@@ -1731,6 +1802,174 @@ mod indicator_tests {
         state.request_cancel();
         assert!(canceled.load(Ordering::Acquire));
         assert_eq!(state.indicator_phase(), Phase::Hidden);
+    }
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::*;
+    use backend::fake;
+
+    struct Running {
+        jobs: mpsc::Sender<Job>,
+        events: mpsc::Receiver<Event>,
+        busy: Arc<AtomicBool>,
+        process: backend::Process,
+    }
+
+    /// A worker serving a loaded engine that answers `response` once.
+    fn start(response: &'static str, idle_timeout: Duration) -> Running {
+        let (engine, _server) = fake::engine(response);
+        let process = engine.process.clone();
+        let (jobs, receiver) = mpsc::channel();
+        let (sender, events) = mpsc::channel();
+        let busy = Arc::new(AtomicBool::new(false));
+        let worker_busy = busy.clone();
+        thread::spawn(move || {
+            worker(
+                receiver,
+                engines::Engines::fake(engine, None),
+                None,
+                idle_timeout,
+                false,
+                worker_busy,
+                |event| sender.send(event).is_ok(),
+            )
+        });
+        Running {
+            jobs,
+            events,
+            busy,
+            process,
+        }
+    }
+
+    fn flag(canceled: bool) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(canceled))
+    }
+
+    fn next(running: &Running) -> Event {
+        running
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the worker reports")
+    }
+
+    #[test]
+    fn a_dictation_with_no_speech_reports_the_error_and_keeps_the_model() {
+        let running = start(fake::NO_SPEECH, Duration::ZERO);
+        let job = Job::Transcribe(3, fake::wav(), flag(false), Instant::now(), vec![]);
+        running.jobs.send(job).unwrap();
+        let Event::Finished(3, Err(error)) = next(&running) else {
+            panic!("expected the transcription to fail");
+        };
+        assert_eq!(error.to_string(), "No speech recognized");
+        assert!(running.process.loaded());
+    }
+
+    #[test]
+    fn a_failing_engine_is_unloaded() {
+        let running = start(
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            Duration::ZERO,
+        );
+        let job = Job::Transcribe(1, fake::wav(), flag(false), Instant::now(), vec![]);
+        running.jobs.send(job).unwrap();
+        assert!(matches!(next(&running), Event::Finished(1, Err(_))));
+        assert!(!running.process.loaded());
+    }
+
+    #[test]
+    fn jobs_canceled_before_they_start_keep_the_model() {
+        let running = start(fake::NO_SPEECH, Duration::ZERO);
+        running.jobs.send(Job::Prepare(flag(true))).unwrap();
+        running.jobs.send(Job::Warm(1, flag(true))).unwrap();
+        assert!(matches!(next(&running), Event::Finished(1, Err(_))));
+        let job = Job::Transcribe(2, fake::wav(), flag(true), Instant::now(), vec![]);
+        running.jobs.send(job).unwrap();
+        assert!(matches!(next(&running), Event::Finished(2, Err(_))));
+        assert!(running.process.loaded());
+        // The model they left alone serves the next request without a load.
+        running.jobs.send(Job::Warm(3, flag(false))).unwrap();
+        assert!(matches!(
+            next(&running),
+            Event::Finished(3, Ok(Outcome::ModelLoaded))
+        ));
+    }
+
+    #[test]
+    fn the_idle_timer_waits_for_the_event_loop_to_be_idle() {
+        let idle = Duration::from_millis(50);
+        let running = start(fake::NO_SPEECH, idle);
+        running.busy.store(true, Ordering::Release);
+        assert!(
+            running.events.recv_timeout(idle * 6).is_err(),
+            "nothing is unloaded during a dictation"
+        );
+        assert!(running.process.loaded());
+        running.busy.store(false, Ordering::Release);
+        assert!(matches!(next(&running), Event::WorkerUnloaded));
+        assert!(!running.process.loaded());
+    }
+
+    #[test]
+    fn every_state_but_idle_holds_off_the_idle_timer() {
+        let canceled = flag(false);
+        assert!(!State::Idle.busy());
+        assert!(
+            State::Starting {
+                id: 1,
+                canceled: canceled.clone()
+            }
+            .busy()
+        );
+        for kind in [
+            WorkKind::Warm,
+            WorkKind::Download,
+            WorkKind::FinalizeAudio,
+            WorkKind::Transcribe,
+            WorkKind::Deliver,
+        ] {
+            let mut state = State::Working {
+                id: 1,
+                canceled: canceled.clone(),
+                kind,
+            };
+            assert!(state.busy());
+            state.request_cancel();
+            assert!(state.busy(), "canceling is not idle yet");
+        }
+    }
+
+    #[test]
+    fn stopping_the_worker_cancels_the_launch_preload_it_may_land_on() {
+        let (engine, _server) = fake::engine(fake::NO_SPEECH);
+        let preload = flag(false);
+        stop_worker(&engine.process, &preload);
+        assert!(preload.load(Ordering::Acquire));
+        assert!(!engine.process.loaded());
+        // With its flag set, the preload's failure is a cancel, never an engine fault.
+        assert!(!engines::should_fall_back(
+            true,
+            true,
+            "Inference runtime exited"
+        ));
+    }
+
+    #[test]
+    fn a_cancel_that_loses_the_race_with_the_paste_says_so() {
+        assert_eq!(
+            canceled_status(&Ok(Outcome::Delivered)),
+            "Transcript delivered"
+        );
+        assert_eq!(
+            canceled_status(&Ok(Outcome::Transcript("hi".into(), Instant::now()))),
+            "Canceled"
+        );
+        assert_eq!(
+            canceled_status(&Err(anyhow::anyhow!("Canceled"))),
+            "Canceled"
+        );
     }
 }
 

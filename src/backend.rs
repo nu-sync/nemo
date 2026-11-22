@@ -15,6 +15,33 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A request that ended without the engine being at fault: it was canceled before it
+/// reached the engine, or its audio held nothing to transcribe. The engine stays loaded
+/// and stays selected.
+#[derive(Debug)]
+pub struct Blameless(&'static str);
+
+impl std::fmt::Display for Blameless {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Blameless {}
+
+/// Whether an error is a reason to retire the engine or fall back from it.
+pub fn at_fault(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<Blameless>().is_none()
+}
+
+fn blameless(holds: bool, why: &'static str) -> Result<()> {
+    if holds {
+        Ok(())
+    } else {
+        Err(Blameless(why).into())
+    }
+}
+
 #[derive(Default)]
 enum ProcessState {
     #[default]
@@ -98,6 +125,11 @@ impl Process {
         };
         *state = ProcessState::Ready { child, base };
         Ok(())
+    }
+
+    /// Whether the engine is loaded and still running.
+    pub fn loaded(&self) -> bool {
+        self.endpoint().ok().flatten().is_some()
     }
 
     fn endpoint(&self) -> Result<Option<String>> {
@@ -278,7 +310,7 @@ impl Backend {
     }
 
     pub fn loaded(&self) -> bool {
-        self.process.endpoint().ok().flatten().is_some()
+        self.process.loaded()
     }
 
     /// The engine this process runs, for status and for telemetry that has to attribute a
@@ -343,7 +375,7 @@ impl Backend {
     }
 
     pub fn ready(&mut self, canceled: &AtomicBool) -> Result<bool> {
-        ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+        blameless(!canceled.load(Ordering::Acquire), "Canceled")?;
         if self.process.endpoint()?.is_some() {
             return Ok(true);
         }
@@ -420,19 +452,19 @@ impl Backend {
         let mut reused_model = false;
         let mut request_started = None;
         let result = (|| {
-            ensure!(audio.len() <= 64 * 1024 * 1024, "WAV input exceeds 64 MiB");
+            blameless(audio.len() <= 64 * 1024 * 1024, "WAV input exceeds 64 MiB")?;
             let wav = hound::WavReader::new(std::io::Cursor::new(&audio))
-                .context("Input must be a readable WAV file")?;
-            ensure!(
+                .map_err(|_| Blameless("Input must be a readable WAV file"))?;
+            blameless(
                 wav.spec().sample_rate > 0 && wav.duration() > 0,
-                "WAV input is empty"
-            );
+                "WAV input is empty",
+            )?;
             let seconds = wav.duration() as f64 / wav.spec().sample_rate as f64;
             audio_seconds = Some(seconds);
-            ensure!(
+            blameless(
                 seconds <= 300.0,
-                "WAV input exceeds the five-minute dictation limit"
-            );
+                "WAV input exceeds the five-minute dictation limit",
+            )?;
             let loading = Instant::now();
             let ready = self.ready(canceled);
             model_load_ms = Some(loading.elapsed().as_secs_f64() * 1000.0);
@@ -440,7 +472,7 @@ impl Backend {
             if reused_model {
                 model_load_ms = Some(0.0);
             }
-            ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+            blameless(!canceled.load(Ordering::Acquire), "Canceled")?;
             request_started = Some(Instant::now());
             let part = multipart::Part::bytes(audio)
                 .file_name("recording.wav")
@@ -471,7 +503,7 @@ impl Backend {
                 self.unload();
             }
             ensure!(status.is_success(), "Transcription failed ({status})");
-            ensure!(!canceled.load(Ordering::Acquire), "Canceled");
+            blameless(!canceled.load(Ordering::Acquire), "Canceled")?;
             #[derive(Deserialize)]
             struct Transcript {
                 text: String,
@@ -479,7 +511,7 @@ impl Backend {
             let result: Transcript =
                 serde_json::from_str(&body).context("Invalid response from inference runtime")?;
             let text = result.text.trim().to_string();
-            ensure!(!text.is_empty(), "No speech recognized");
+            blameless(!text.is_empty(), "No speech recognized")?;
             Ok(text)
         })();
         let request_ms =
@@ -512,6 +544,53 @@ impl Backend {
 impl Drop for Backend {
     fn drop(&mut self) {
         self.unload();
+    }
+}
+
+/// Loaded engines that answer one transcription request, for tests in any module.
+#[cfg(test)]
+pub(crate) mod fake {
+    use super::*;
+    use std::io::{Read, Write};
+
+    pub const NO_SPEECH: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\nconnection: close\r\n\r\n{\"text\":\"\"}";
+
+    pub fn engine(response: &'static str) -> (Backend, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            // The whole upload, so the client is reading when the answer arrives.
+            while !request.ends_with(b"--\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                request.extend_from_slice(&chunk[..read]);
+            }
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let canceled = AtomicBool::new(false);
+        let backend = Backend::new(Config::default(), Process::default()).unwrap();
+        backend
+            .process
+            .start(Command::new("/bin/sleep").arg("60"), &canceled)
+            .unwrap();
+        backend.process.mark_ready(base, &canceled).unwrap();
+        (backend, server)
+    }
+
+    pub fn wav() -> Vec<u8> {
+        let mut wav = std::io::Cursor::new(Vec::new());
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::new(&mut wav, spec).unwrap();
+        (0..1600).for_each(|sample| writer.write_sample(sample as i16).unwrap());
+        writer.finalize().unwrap();
+        wav.into_inner()
     }
 }
 
@@ -700,50 +779,41 @@ mod tests {
 
     #[test]
     fn an_engine_that_answers_a_server_error_is_retired_not_reused() {
-        use std::io::{Read, Write};
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            // The whole upload, so the client is reading when the answer arrives.
-            while !request.ends_with(b"--\r\n") {
-                let read = stream.read(&mut chunk).unwrap();
-                request.extend_from_slice(&chunk[..read]);
-            }
-            stream
-                .write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
-                .unwrap();
-        });
-        let mut wav = std::io::Cursor::new(Vec::new());
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 16000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::new(&mut wav, spec).unwrap();
-        (0..1600).for_each(|sample| writer.write_sample(sample as i16).unwrap());
-        writer.finalize().unwrap();
-
-        let canceled = AtomicBool::new(false);
-        let mut backend = Backend::new(Config::default(), Process::default()).unwrap();
-        backend
-            .process
-            .start(Command::new("/bin/sleep").arg("60"), &canceled)
-            .unwrap();
-        backend.process.mark_ready(base, &canceled).unwrap();
+        let (mut backend, server) = fake::engine(
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
         assert!(backend.loaded());
         let error = backend
-            .transcribe(wav.into_inner(), &canceled, &[])
+            .transcribe(fake::wav(), &AtomicBool::new(false), &[])
             .unwrap_err();
         server.join().unwrap();
         assert!(error.to_string().contains("500"), "{error:#}");
+        assert!(at_fault(&error));
         assert!(
             !backend.loaded(),
             "a failing engine must not serve the next request"
         );
+    }
+
+    #[test]
+    fn a_dictation_with_no_speech_is_not_an_engine_failure() {
+        let (mut backend, server) = fake::engine(fake::NO_SPEECH);
+        let error = backend
+            .transcribe(fake::wav(), &AtomicBool::new(false), &[])
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.to_string(), "No speech recognized");
+        assert!(!at_fault(&error));
+        assert!(backend.loaded(), "a healthy engine serves the next request");
+    }
+
+    #[test]
+    fn a_request_canceled_before_it_starts_is_not_an_engine_failure() {
+        let mut backend = Backend::new(Config::default(), Process::default()).unwrap();
+        let error = backend.ready(&AtomicBool::new(true)).unwrap_err();
+        assert!(!at_fault(&error));
+        // Context added on the way up must not hide the verdict.
+        assert!(!at_fault(&error.context("Model preparation failed")));
     }
 
     #[test]
@@ -753,6 +823,7 @@ mod tests {
             .transcribe(vec![0; 44], &AtomicBool::new(false), &[])
             .unwrap_err();
         assert!(error.to_string().contains("readable WAV"));
+        assert!(!at_fault(&error));
         assert!(!backend.process.running().unwrap());
     }
 
