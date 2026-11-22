@@ -73,7 +73,9 @@ file. CLI transcription deliberately prints its output. The system clipboard
 retains the last delivered transcript; clipboard synchronization, clipboard
 managers and the application receiving pasted text have their own behavior.
 
-Daemon and inference logs have mode 0600. Timing events omit audio/transcript, and
+Daemon and inference logs have mode 0600. Timing events omit audio/transcript; a failed
+step records the same error text the menu shows, which can name a microphone or a
+model path. Failure text has no transcript, and
 HTTP failure bodies are not included in errors. Clearing the native environment
 also removes inherited debug tracing and optional backend/model settings.
 This is not a secure-erasure guarantee for RAM, swap, OS diagnostics or clipboard.

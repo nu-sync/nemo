@@ -41,6 +41,29 @@ content-free JSON events cover these boundaries:
 | `delivery` | `delivery_ms` | Background delivery call, including clipboard writing and paste dispatch |
 | `delivery` | `stop_to_dispatch_ms` | Stop handling to delivery call completion |
 
+Every event also carries `ts` (UTC, RFC 3339), `version`, `build` (the first 12
+characters of the daemon executable's SHA-256, which tells development builds apart)
+and, while a dictation is under way, `dictation`: its start time in Unix milliseconds,
+shared by all of its events so they can be joined. An event with `success: false` gives
+the reason in `error`.
+
+Each dictation ends with one `dictation` event:
+
+| Field | Meaning |
+| --- | --- |
+| `outcome` | `delivered`, `canceled` or `failed` |
+| `phase` | How far it got: `microphone`, `recording`, `audio`, `transcription` or `delivery` |
+| `duration_ms` | Record request to the end of the dictation |
+| `error` | The failure shown in the menu, when `outcome` is `failed` |
+
+The daemon writes one `daemon_started` event with the settings that shape timing.
+`scripts/telemetry-report.py` joins events by dictation and summarizes outcomes, failure
+reasons and timings; the [read-nemo-telemetry](../.agents/skills/read-nemo-telemetry/SKILL.md)
+skill explains how to read it.
+
+A record request refused for missing microphone permission is a `failed` dictation at
+`microphone`. A model load outside a dictation has no `dictation` field.
+
 Dispatch completion does not establish text insertion or pixel rendering in another
 app. `stop_to_inference_ms` includes finalization and queueing; backend readiness can
 still wait for an unfinished preparation job. These events contain no audio or text.

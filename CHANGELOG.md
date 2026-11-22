@@ -9,6 +9,8 @@
 - Keep the model loaded, and the selected engine selected, after a dictation with no speech.
 - Keep the model loaded through a dictation longer than the idle timeout, and when canceling while audio is finishing or text is being pasted.
 - Canceling during the launch preload no longer makes Nemo fall back to the included engine.
+- Log events carry a timestamp, the app version and build, a dictation ID, and the reason for a failure; each dictation ends with one `dictation` event naming its outcome.
+- `scripts/telemetry-report.py` joins log events by dictation and summarizes outcomes, failure reasons and timings.
 
 ## 0.2.0
 

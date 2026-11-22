@@ -160,15 +160,14 @@ impl Engines {
         let kept = std::fs::rename(data.join("inference.log"), &kept)
             .is_ok()
             .then_some(kept);
-        eprintln!(
-            "{}",
+        crate::telemetry::emit(
+            "backend_demoted",
             serde_json::json!({
-                "event": "backend_demoted",
                 "engine": selected.label(),
                 "fallback": standing_in.label(),
                 "reason": reason,
                 "log": kept,
-            })
+            }),
         );
         *self.status.lock().unwrap() = Some(format!(
             "{} failed; using {}",

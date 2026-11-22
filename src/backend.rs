@@ -381,15 +381,14 @@ impl Backend {
         }
         let started = Instant::now();
         let result = self.load(canceled);
-        eprintln!(
-            "{}",
+        crate::telemetry::emit_result(
+            "model_load",
+            &result,
             serde_json::json!({
-                "event": "model_load",
                 "engine": self.backend().label(),
                 "identity": self.engine.identity(),
                 "load_ms": started.elapsed().as_secs_f64() * 1000.0,
-                "success": result.is_ok(),
-            })
+            }),
         );
         result.map(|()| false)
     }
@@ -523,10 +522,10 @@ impl Backend {
         } else {
             None
         };
-        eprintln!(
-            "{}",
+        crate::telemetry::emit_result(
+            "transcription",
+            &result,
             serde_json::json!({
-                "event": "transcription",
                 "engine": self.backend().label(),
                 "audio_seconds": audio_seconds,
                 "model_load_ms": model_load_ms,
@@ -534,8 +533,7 @@ impl Backend {
                 "total_ms": started.elapsed().as_secs_f64() * 1000.0,
                 "reused_model": reused_model,
                 "real_time_factor": real_time_factor,
-                "success": result.is_ok(),
-            })
+            }),
         );
         result
     }

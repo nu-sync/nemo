@@ -19,6 +19,7 @@ mod shortcut;
 mod sounds;
 mod startup;
 mod storage;
+mod telemetry;
 
 use anyhow::Result;
 use anyhow::{Context, bail};
@@ -704,14 +705,13 @@ fn start_recording(
     let requested = Instant::now();
     thread::spawn(move || {
         let result = audio::Recording::start(seconds, microphone.as_ref());
-        eprintln!(
-            "{}",
+        telemetry::emit_result(
+            "capture_start",
+            &result,
             serde_json::json!({
-                "event": "capture_start",
                 "microphone_start_ms": requested.elapsed().as_secs_f64() * 1000.0,
                 "recording_started": result.is_ok(),
-                "success": result.is_ok(),
-            })
+            }),
         );
         let _ = proxy.send_event(Event::RecordingStarted(id, result));
     });
@@ -794,12 +794,11 @@ fn worker(
                         (id, result.map(|_| Outcome::ModelDownloaded))
                     }
                     Job::Transcribe(id, wav, canceled, stopped, hint) => {
-                        eprintln!(
-                            "{}",
+                        telemetry::emit(
+                            "inference_started",
                             serde_json::json!({
-                                "event": "inference_started",
                                 "stop_to_inference_ms": stopped.elapsed().as_secs_f64() * 1000.0,
-                            })
+                            }),
                         );
                         (
                             id,
@@ -831,6 +830,14 @@ fn worker(
 fn stop_worker(process: &backend::Process, preload_canceled: &AtomicBool) {
     preload_canceled.store(true, Ordering::Release);
     process.stop();
+}
+
+/// Report an operation's failure. A failed dictation also ends here; a failed model load
+/// or download has no dictation to end.
+fn fail(set_status: &impl Fn(&str), message: String) {
+    set_status(&message);
+    output::sound("Basso");
+    telemetry::finish_dictation(telemetry::Ending::Failed(message));
 }
 
 /// What a finished cancellation reports. A cancel can arrive after the paste happened.
@@ -958,6 +965,17 @@ fn run(mut config: Config) -> Result<()> {
     // Set only when the selected engine failed and the included one took over.
     let engine_status = engines::Status::default();
     let executable_sha256 = nemo_build::sha256(&std::env::current_exe()?)?;
+    telemetry::set_build(&executable_sha256);
+    telemetry::emit(
+        "daemon_started",
+        serde_json::json!({
+            "backend": config.backend.label(),
+            "idle_unload_seconds": config.idle_unload_seconds,
+            "preload_model": config.preload_model,
+            "paste": config.paste,
+            "max_recording_seconds": config.max_recording_seconds,
+        }),
+    );
     let socket_status = status.clone();
     let socket_readiness = readiness.clone();
     let socket_engine = engine_status.clone();
@@ -1180,7 +1198,9 @@ fn run(mut config: Config) -> Result<()> {
             {
                 canceled.store(true, Ordering::Release);
                 state = State::Idle;
-                set_status(&format!("Microphone failed: {error}. Recording discarded"));
+                let message = format!("Microphone failed: {error}. Recording discarded");
+                set_status(&message);
+                telemetry::finish_dictation(telemetry::Ending::Failed(message));
                 output::sound("Basso");
             }
 
@@ -1230,6 +1250,7 @@ fn run(mut config: Config) -> Result<()> {
                             );
                             state = State::Idle;
                             set_status(&message);
+                            telemetry::finish_dictation(telemetry::Ending::Failed(message));
                             output::sound("Basso");
                         }
                         input_readiness = readiness::Input::from_inputs(&observed, config.microphone.as_ref());
@@ -1340,6 +1361,7 @@ fn run(mut config: Config) -> Result<()> {
             TaoEvent::UserEvent(Event::RecordingStarted(id, result)) => {
                 if state.finish_cancellation(id, Completion::Microphone) {
                     set_status("Canceled");
+                    telemetry::finish_dictation(telemetry::Ending::Canceled);
                 }
                 if let State::Starting {
                     id: current,
@@ -1366,13 +1388,13 @@ fn run(mut config: Config) -> Result<()> {
                                     canceled: canceled.clone(),
                                 };
                                 set_status("Recording");
+                                telemetry::advance_dictation(telemetry::Phase::Recording);
                                 sounds.play(config.sound_pack, sounds::Cue::Start);
                             }
                             Err(error) => {
                                 canceled.store(true, Ordering::Release);
                                 state = State::Idle;
-                                set_status(&format!("{error:#}"));
-                                output::sound("Basso");
+                                fail(&set_status, format!("{error:#}"));
                             }
                     }
                 }
@@ -1389,6 +1411,7 @@ fn run(mut config: Config) -> Result<()> {
             TaoEvent::UserEvent(Event::RecordingFinished(id, result, stopped, hint)) => {
                 if state.finish_cancellation(id, Completion::Audio) {
                     set_status("Canceled");
+                    telemetry::finish_dictation(telemetry::Ending::Canceled);
                 }
                 if let State::Working { id: current, canceled, kind: WorkKind::FinalizeAudio } = &state
                     && *current == id
@@ -1397,14 +1420,14 @@ fn run(mut config: Config) -> Result<()> {
                             Ok(wav) => {
                                 let canceled = state.audio_finalized(id).unwrap();
                                 let _ = jobs.send(Job::Transcribe(id, wav, canceled, stopped, hint));
+                                telemetry::advance_dictation(telemetry::Phase::Transcription);
                                 sounds.play(config.sound_pack, sounds::Cue::Stop);
                             }
                             Err(error) => {
                                 sounds.play(config.sound_pack, sounds::Cue::Stop);
                                 canceled.store(true, Ordering::Release);
                                 state = State::Idle;
-                                set_status(&format!("{error:#}"));
-                                output::sound("Basso");
+                                fail(&set_status, format!("{error:#}"));
                             }
                     }
                 }
@@ -1413,6 +1436,10 @@ fn run(mut config: Config) -> Result<()> {
             TaoEvent::UserEvent(Event::Finished(id, result)) => {
                 if state.finish_cancellation(id, Completion::Worker) {
                     set_status(canceled_status(&result));
+                    telemetry::finish_dictation(match &result {
+                        Ok(Outcome::Delivered) => telemetry::Ending::Delivered,
+                        _ => telemetry::Ending::Canceled,
+                    });
                 }
                 if let State::Working { id: current, canceled, kind: WorkKind::Warm | WorkKind::Download | WorkKind::Transcribe | WorkKind::Deliver } = &state
                     && *current == id
@@ -1422,6 +1449,7 @@ fn run(mut config: Config) -> Result<()> {
                     match result {
                             Ok(Outcome::Transcript(text, stopped)) => {
                                 state = State::Working { id, canceled: canceled.clone(), kind: WorkKind::Deliver };
+                                telemetry::advance_dictation(telemetry::Phase::Delivery);
                                 let proxy = recording_proxy.clone();
                                 let paste = config.paste;
                                 let remove_period = config.remove_trailing_period;
@@ -1430,11 +1458,9 @@ fn run(mut config: Config) -> Result<()> {
                                     let result = output::deliver(
                                         output::format_transcript(&text, remove_period), paste, &canceled,
                                     );
-                                    eprintln!("{}", serde_json::json!({
-                                        "event": "delivery",
+                                    telemetry::emit_result("delivery", &result, serde_json::json!({
                                         "delivery_ms": started.elapsed().as_secs_f64() * 1000.0,
                                         "stop_to_dispatch_ms": stopped.elapsed().as_secs_f64() * 1000.0,
-                                        "success": result.is_ok(),
                                     }));
                                     let _ = proxy.send_event(Event::Finished(id, result.map(|_| Outcome::Delivered)));
                                 });
@@ -1444,14 +1470,12 @@ fn run(mut config: Config) -> Result<()> {
                                 match other {
                                     Ok(Outcome::Delivered) => {
                                         set_status("Transcript delivered");
+                                        telemetry::finish_dictation(telemetry::Ending::Delivered);
                                         sounds.play(config.sound_pack, sounds::Cue::Complete);
                                     }
                                     Ok(Outcome::ModelLoaded) => set_status("Model loaded"),
                                     Ok(Outcome::ModelDownloaded) => set_status("Model downloaded"),
-                                    Err(error) => {
-                                        set_status(&format!("{error:#}"));
-                                        output::sound("Basso");
-                                    }
+                                    Err(error) => fail(&set_status, format!("{error:#}")),
                                     Ok(Outcome::Transcript(..)) => unreachable!(),
                                 }
                             }
@@ -1494,6 +1518,7 @@ fn run(mut config: Config) -> Result<()> {
                 {
                     canceled.store(true, Ordering::Release);
                 }
+                telemetry::finish_dictation(telemetry::Ending::Canceled);
                 process.shutdown();
                 *flow = ControlFlow::Exit;
             }
@@ -1528,6 +1553,7 @@ fn run(mut config: Config) -> Result<()> {
                 CancelAction::DiscardRecording => {
                     output::sound("Pop");
                     set_status("Canceled");
+                    telemetry::finish_dictation(telemetry::Ending::Canceled);
                 }
                 CancelAction::WaitMicrophone => set_status("Canceling microphone request"),
                 CancelAction::None => {}
@@ -1571,9 +1597,13 @@ fn run(mut config: Config) -> Result<()> {
                 }
                 match std::mem::replace(&mut state, State::Idle) {
                     State::Idle => {
+                        telemetry::begin_dictation();
                         let permissions = permissions::Snapshot::current();
                         if !permissions.recording_allowed() {
                             set_status("Enable Microphone");
+                            telemetry::finish_dictation(telemetry::Ending::Failed(
+                                "Enable Microphone".into(),
+                            ));
                             return;
                         }
                         next_id += 1;
@@ -1591,16 +1621,15 @@ fn run(mut config: Config) -> Result<()> {
                         audio, canceled, gpu_session, ..
                     } => {
                         let stopped = Instant::now();
+                        telemetry::advance_dictation(telemetry::Phase::Audio);
                         let hint = gpu_session.and_then(|session| session.ready().cloned()).unwrap_or_default();
                         next_id += 1;
                         let id = next_id;
                         let proxy = recording_proxy.clone();
                         thread::spawn(move || {
                             let recording = audio.finish();
-                            eprintln!("{}", serde_json::json!({
-                                "event": "audio_finalized",
+                            telemetry::emit_result("audio_finalized", &recording, serde_json::json!({
                                 "finalization_ms": stopped.elapsed().as_secs_f64() * 1000.0,
-                                "success": recording.is_ok(),
                             }));
                             let _ = proxy.send_event(Event::RecordingFinished(id, recording, stopped, hint));
                         });
