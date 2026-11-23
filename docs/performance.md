@@ -14,7 +14,38 @@ The [delivery latency update](delivery-latency.md) describes the October 30
 delivery changes and paste measurements. The engine comparison and 48 kHz
 resampling measurements below are from November.
 
-The current MLX profile uses 2/4/8/12/24-second recording previews, eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout. Recording triggers previews when the required audio arrives. The worker sends no periodic GPU wakes. The November 19 reference profile kept the model resident, used a 2 GB cache, and issued one GPU wake per second during recording.
+The current MLX profile uses 2/4/8/12/24-second recording previews, eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout. Recording triggers previews when the required audio arrives. After eight seconds, speech pauses and resumptions can also wake the GPU. Periodic wakes remain off. The November 19 reference profile kept the model resident, used a 2 GB cache, and issued one GPU wake per second during recording.
+
+## Recovering long-clip latency on battery
+
+The November 23 regression added a median **124 ms inside the MLX request** on both the 15- and 30-second clips. Audio finalization and formatting together changed by less than 2 ms. The last completed previews offered the same 40 and 64 tokens in both builds. What changed was the gap since the last GPU submission. The previous build issued a small Metal operation every second during capture. With periodic wakes disabled, the last previews started three and six seconds before Stop. Earlier interval experiments on this Mac also found a latency increase between two and three seconds of GPU inactivity.
+
+The new build keeps the preview schedule, cache, draft depth and idle timeout. After eight seconds of capture it can submit one small Metal operation when speech falls quiet for 140 ms or resumes after at least half a second. It leaves at least half a second between a preview or wake and the next optional wake. Steady input produces only the scheduled previews. The same decision runs on microphone blocks and saved PCM. A pause-only prototype recovered the 30-second clip in its screen but missed at 15 seconds, where the recording ends in the next phrase.
+
+Two five-round battery series on the M5 Max compared three warm profiles on the same 48 kHz PCM. The current control and candidate used signed Nemo app recording replay. The previous profile used its saved Rust capture adapter and original signed helper. Cases and visit order varied, and the second series reversed arm order. Each measurement starts at simulated Stop and ends after formatting.
+
+| Clip | Previous profile | Current control | Speech boundaries, median [range] | Paired wait reduction vs current, first / repeat |
+| --- | ---: | ---: | ---: | ---: |
+| 5 s | 169 ms | 143 ms | 143 ms [124–161] | −6.2% / 3.9% |
+| 10 s | 239 ms | 186 ms | 179 ms [171–200] | 2.6% / 2.5% |
+| 15 s | 249 ms | 386 ms | 243 ms [232–259] | 39.3% / 35.6% |
+| 30 s | 380 ms | 524 ms | 359 ms [350–390] | 27.6% / 32.7% |
+
+All 40 matched triplets produced identical raw and formatted text. The candidate issued 0, 1, 3 and 11 speech-boundary submissions per recording respectively. The old periodic worker issued 5, 10, 15 and 30. These are request counts. Battery energy was not measured. The two longer inputs come from the same project update, so the results apply to those speech patterns. A user who holds the microphone open through extended silence can still encounter the GPU wake delay.
+
+At five seconds the candidate gained 15.7% and 17.8% over the previous profile. The first series missed the 5% tolerance against the current control. Both series met that tolerance on the other three clips. Two follow-up blocks directly paired the current build and candidate on the five-second clip with only a one-second warmup. In ten pairs per block, the candidate was 0.35% slower and 0.80% faster by paired median. All 20 pairs matched exactly, and the candidate issued zero speech-boundary submissions on every five-second run.
+
+The installed app then replayed the four clips on battery in 145, 183, 235 and 354 ms from Stop to formatted text. All four matched both controls. The signed running daemon and installed executable had the same SHA-256 prefix, `61e021af07ca`. The qualified bundle and the installed copy carried identical release executable and runtime digests in their install receipts. The installed recording replay also matched the capture-path control on all 12 frozen fixtures, through 300 seconds. Both had 13 word errors across 2,312 reference words. No ordinary dictation was logged for the new build during this verification, so the controlled timings cover Stop through formatted text.
+
+The local protocol, signed controls, per-visit logs and paired results are under `artifacts/performance/pause-recovery/`. Reproduce in a fresh output directory on battery from the repository root.
+
+```sh
+p=artifacts/performance/pause-recovery
+out=$(mktemp -d "$p/repeat-XXXXXX")
+uv run --no-project --no-cache "$p/compare.py" qualify --candidate "$p/Candidate.app" --out "$out"
+uv run --no-project --no-cache "$p/short.py" --app "$p/Candidate.app" --out "$out"
+uv run --no-project --no-cache "$p/compare.py" corpus --candidate "$HOME/Applications/Nemo.app" --out "$out"
+```
 
 ## Installed MLX profile on battery
 

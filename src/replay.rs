@@ -43,21 +43,25 @@ pub fn transcribe(
         .then(|| RecordingPreview::new(&samples, SAMPLE_RATE));
     let started = Instant::now();
     let mut end = 0;
+    let mut triggers = audio::RecordingTriggers::default();
+    let mut speech_boundary_submissions = 0;
     for chunk in pcm.chunks(CHUNK_FRAMES) {
         let start = end;
         end += chunk.len();
         let deadline = started + Duration::from_secs_f64(end as f64 / f64::from(SAMPLE_RATE));
         thread::sleep(deadline.saturating_duration_since(Instant::now()));
         ensure!(!canceled.load(Ordering::Acquire), "Canceled");
-        samples
-            .lock()
-            .unwrap()
-            .extend(chunk.iter().map(|value| f32::from(*value) / 32_768.0));
+        let mut captured = samples.lock().unwrap();
+        captured.extend(chunk.iter().map(|value| f32::from(*value) / 32_768.0));
+        let rms = audio::block_rms(&captured[start..]);
+        drop(captured);
         if end < pcm.len()
             && let Some(preview) = &preview
-            && RecordingPreview::crosses_threshold(start, end, SAMPLE_RATE)
+            && let Some(work) = triggers.observe(start, end, SAMPLE_RATE, rms)
         {
-            engines.start_preview(preview);
+            engines.recording_work(preview, work);
+            speech_boundary_submissions +=
+                usize::from(work == audio::RecordingWork::SpeechBoundary);
         }
     }
 
@@ -71,7 +75,7 @@ pub fn transcribe(
     let elapsed_ms = stopped.elapsed().as_secs_f64() * 1_000.0;
     telemetry::emit(
         "recording_replay",
-        serde_json::json!({"stop_to_text_ms": elapsed_ms, "preview_tokens": hint.len()}),
+        serde_json::json!({"stop_to_text_ms": elapsed_ms, "preview_tokens": hint.len(), "speech_boundary_submissions": speech_boundary_submissions}),
     );
     Ok(ReplayResult {
         text: raw,

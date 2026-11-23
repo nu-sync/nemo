@@ -323,6 +323,17 @@ impl Backend {
         self.process.0.lock().unwrap().retire(false)
     }
 
+    pub fn wake_at_speech_boundary(&self) {
+        if let Ok(Some(base)) = self.process.endpoint() {
+            let _ = self
+                .client
+                .post(format!("{base}/v1/gpu/wake"))
+                .bearer_auth(&self.key)
+                .timeout(Duration::from_millis(50))
+                .send();
+        }
+    }
+
     pub fn start_preview(&self, recording: &Arc<crate::audio::RecordingPreview>) {
         let Some((index, samples, rate)) = recording.take_prefix() else {
             return;

@@ -10,6 +10,7 @@
 //! dictation, so the demotion is sticky until the configuration changes or Nemo restarts.
 
 use crate::{
+    audio::{RecordingPreview, RecordingWork},
     backend::{Backend, Process},
     config::{Backend as Engine, Config},
 };
@@ -63,9 +64,12 @@ impl Engines {
         self.primary.loaded()
     }
 
-    pub fn start_preview(&self, recording: &Arc<crate::audio::RecordingPreview>) {
+    pub fn recording_work(&self, recording: &Arc<RecordingPreview>, work: RecordingWork) {
         if self.demoted.is_none() {
-            self.primary.start_preview(recording);
+            match work {
+                RecordingWork::Preview => self.primary.start_preview(recording),
+                RecordingWork::SpeechBoundary => self.primary.wake_at_speech_boundary(),
+            }
         }
     }
 

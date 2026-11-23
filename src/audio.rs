@@ -51,13 +51,10 @@ impl Inputs {
 struct LevelMeter(AtomicU32);
 
 impl LevelMeter {
-    fn publish(&self, samples: &[f32]) {
-        if samples.is_empty() {
-            return;
-        }
-        let power = samples.iter().map(|sample| sample * sample).sum::<f32>();
-        let rms = (power / samples.len() as f32).sqrt().clamp(0.0, 1.0);
+    fn publish(&self, samples: &[f32]) -> f32 {
+        let rms = block_rms(samples);
         self.0.fetch_max(rms.to_bits(), Ordering::Relaxed);
+        rms
     }
 
     fn take(&self) -> f32 {
@@ -77,7 +74,72 @@ pub struct Recording {
 
 const PREVIEW_SECONDS: [usize; 5] = [2, 4, 8, 12, 24];
 
-pub type PreviewCallback = Arc<dyn Fn(Weak<RecordingPreview>) + Send + Sync>;
+pub type RecordingCallback = Arc<dyn Fn(Weak<RecordingPreview>, RecordingWork) + Send + Sync>;
+
+pub fn block_rms(samples: &[f32]) -> f32 {
+    let power = samples.iter().map(|sample| sample * sample).sum::<f32>();
+    (power / samples.len().max(1) as f32).sqrt().clamp(0.0, 1.0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingWork {
+    Preview,
+    SpeechBoundary,
+}
+
+/// A likely end of speech can prime Metal for Stop. Count captured frames so
+/// sustained silence and a stopped input stream cannot generate repeat wakes.
+#[derive(Default)]
+pub struct RecordingTriggers {
+    heard_speech: bool,
+    quiet_frames: usize,
+    last_voice_frame: Option<usize>,
+    last_job_frame: usize,
+}
+
+impl RecordingTriggers {
+    pub fn observe(
+        &mut self,
+        start: usize,
+        end: usize,
+        rate: u32,
+        rms: f32,
+    ) -> Option<RecordingWork> {
+        if start == end {
+            return None;
+        }
+        let preview = RecordingPreview::crosses_threshold(start, end, rate);
+        let rate = rate as usize;
+        // Hysteresis at about −40 / −48 dBFS keeps low-level noise from rearming a pause.
+        let resumed = rms >= 0.01
+            && !self.heard_speech
+            && self
+                .last_voice_frame
+                .is_some_and(|last| start - last >= rate / 2);
+        if rms >= 0.01 {
+            self.last_voice_frame = Some(end);
+            self.heard_speech = true;
+            self.quiet_frames = 0;
+        } else if rms < 0.004 {
+            self.quiet_frames += end - start;
+        } else {
+            self.quiet_frames = 0;
+        }
+        let pause = self.heard_speech && self.quiet_frames >= rate * 140 / 1000;
+        if pause {
+            self.heard_speech = false;
+        }
+        let work = if preview {
+            RecordingWork::Preview
+        } else if (pause || resumed) && end > 8 * rate && end - self.last_job_frame >= rate / 2 {
+            RecordingWork::SpeechBoundary
+        } else {
+            return None;
+        };
+        self.last_job_frame = end;
+        Some(work)
+    }
+}
 
 /// Only the live recording owns this result. A late preview cannot reach the next recording.
 pub struct RecordingPreview {
@@ -142,13 +204,13 @@ impl Recording {
     pub fn start(
         max_seconds: u64,
         selected: Option<&Microphone>,
-        on_preview: Option<PreviewCallback>,
+        on_recording_work: Option<RecordingCallback>,
     ) -> Result<Self> {
         let inputs = Inputs::current()?;
         let microphone = inputs
             .resolve(selected)
             .context("No microphone available. Connect one or choose an input in Nemo Settings")?;
-        match Self::open(max_seconds, microphone, on_preview.clone()) {
+        match Self::open(max_seconds, microphone, on_recording_work.clone()) {
             Ok(recording) => Ok(recording),
             Err(error) => {
                 // macOS may have changed the default while the first input was opening.
@@ -159,7 +221,7 @@ impl Recording {
                     .filter(|device| device.id != microphone.id);
                 if let Some(fallback) = fallback {
                     eprintln!("Could not open {}: {error:#}", microphone.name);
-                    return Self::open(max_seconds, fallback, on_preview)
+                    return Self::open(max_seconds, fallback, on_recording_work)
                         .with_context(|| format!("Could not open {}", fallback.name));
                 }
                 Err(error).with_context(|| {
@@ -175,7 +237,7 @@ impl Recording {
     fn open(
         max_seconds: u64,
         microphone: &Microphone,
-        on_preview: Option<PreviewCallback>,
+        on_recording_work: Option<RecordingCallback>,
     ) -> Result<Self> {
         let device = cpal::default_host()
             .device_by_id(&microphone.id.parse()?)
@@ -188,10 +250,10 @@ impl Recording {
         let samples = Arc::new(Mutex::new(Vec::new()));
         let error = Arc::new(Mutex::new(None));
         let level = Arc::new(LevelMeter::default());
-        let preview = on_preview
+        let preview = on_recording_work
             .as_ref()
             .map(|_| RecordingPreview::new(&samples, sample_rate));
-        let notify = on_preview.zip(preview.as_ref().map(Arc::downgrade));
+        let notify = on_recording_work.zip(preview.as_ref().map(Arc::downgrade));
         let cap = sample_rate as usize * max_seconds as usize;
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -285,7 +347,7 @@ fn build<T>(
     error: &Arc<Mutex<Option<String>>>,
     level: &Arc<LevelMeter>,
     cap: usize,
-    notify: Option<(PreviewCallback, Weak<RecordingPreview>)>,
+    notify: Option<(RecordingCallback, Weak<RecordingPreview>)>,
 ) -> Result<cpal::Stream>
 where
     T: SizedSample,
@@ -296,6 +358,7 @@ where
     let level = level.clone();
     let channels = config.channels as usize;
     let rate = config.sample_rate;
+    let mut triggers = RecordingTriggers::default();
     Ok(device.build_input_stream(
         config,
         move |data: &[T], _| {
@@ -305,13 +368,13 @@ where
             samples.extend(data.chunks_exact(channels).take(remaining).map(|frame| {
                 frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32
             }));
-            level.publish(&samples[start..]);
+            let rms = level.publish(&samples[start..]);
             let end = samples.len();
             drop(samples);
             if let Some((submit, preview)) = &notify
-                && RecordingPreview::crosses_threshold(start, end, rate)
+                && let Some(work) = triggers.observe(start, end, rate, rms)
             {
-                submit(preview.clone());
+                submit(preview.clone(), work);
             }
         },
         move |err| {
@@ -453,6 +516,52 @@ mod tests {
             .collect();
         assert_eq!(observed, [4, 8, 16, 24, 48]);
         assert!(!RecordingPreview::crosses_threshold(48, 48, 2));
+    }
+
+    #[test]
+    fn speech_boundaries_wake_once_and_respect_recent_recording_work() {
+        let mut triggers = RecordingTriggers::default();
+        let jobs: Vec<_> = (0..3_000)
+            .filter_map(|frame| {
+                // A synthetic 100 Hz envelope with 10 ms blocks.
+                let speech = matches!(frame, 300..=350 | 1_160..=1_195 | 1_300..=1_309
+                    | 1_320..=1_330 | 1_340..=1_350 | 1_400..=1_410 | 1_500..=1_520);
+                let rms = if speech { 0.05 } else { 0.001 };
+                triggers
+                    .observe(frame, frame + 1, 100, rms)
+                    .map(|work| (frame + 1, work))
+            })
+            .collect();
+        use RecordingWork::{Preview, SpeechBoundary};
+        assert_eq!(
+            jobs,
+            [
+                (200, Preview),
+                (400, Preview),
+                (800, Preview),
+                (1_161, SpeechBoundary),
+                (1_200, Preview),
+                (1_301, SpeechBoundary),
+                (1_365, SpeechBoundary),
+                (1_425, SpeechBoundary),
+                (1_501, SpeechBoundary),
+                (2_400, Preview),
+            ]
+        );
+    }
+
+    #[test]
+    fn steady_sound_and_silence_only_trigger_the_scheduled_previews() {
+        for rms in [0.0, 0.006, 0.25] {
+            for block in [128, 480, 1_024] {
+                let mut triggers = RecordingTriggers::default();
+                let jobs: Vec<_> = (0..48_000 * 60)
+                    .step_by(block)
+                    .filter_map(|start| triggers.observe(start, start + block, 48_000, rms))
+                    .collect();
+                assert_eq!(jobs, [RecordingWork::Preview; PREVIEW_SECONDS.len()]);
+            }
+        }
     }
 
     #[test]

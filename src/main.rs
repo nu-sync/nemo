@@ -199,7 +199,7 @@ enum Event {
     WorkerUnloaded,
 }
 enum Job {
-    PreviewRecording(Weak<audio::RecordingPreview>),
+    DuringRecording(Weak<audio::RecordingPreview>, audio::RecordingWork),
     Prepare(Arc<AtomicBool>),
     Download(u64, Arc<AtomicBool>),
     Warm(u64, Arc<AtomicBool>),
@@ -724,11 +724,11 @@ fn start_recording(
     id: u64,
     seconds: u64,
     microphone: Option<audio::Microphone>,
-    on_preview: Option<audio::PreviewCallback>,
+    on_recording_work: Option<audio::RecordingCallback>,
 ) {
     let requested = Instant::now();
     thread::spawn(move || {
-        let result = audio::Recording::start(seconds, microphone.as_ref(), on_preview);
+        let result = audio::Recording::start(seconds, microphone.as_ref(), on_recording_work);
         telemetry::emit_result(
             "capture_start",
             &result,
@@ -762,9 +762,9 @@ fn worker(
         match received {
             Ok(job) => {
                 let (id, result) = match job {
-                    Job::PreviewRecording(session) => {
+                    Job::DuringRecording(session, work) => {
                         if let Some(recording) = session.upgrade() {
-                            backend.start_preview(&recording);
+                            backend.recording_work(&recording, work);
                         }
                         continue;
                     }
@@ -1046,11 +1046,11 @@ fn run(mut config: Config) -> Result<()> {
     let (jobs, receiver) = mpsc::channel();
     let proxy = event_loop.create_proxy();
     let idle_timeout = Duration::from_secs(config.idle_seconds());
-    let on_preview = config.recording_previews().then(|| {
+    let on_recording_work = config.recording_previews().then(|| {
         let jobs = jobs.clone();
-        Arc::new(move |session| {
-            let _ = jobs.send(Job::PreviewRecording(session));
-        }) as audio::PreviewCallback
+        Arc::new(move |session, work| {
+            let _ = jobs.send(Job::DuringRecording(session, work));
+        }) as audio::RecordingCallback
     });
     // Set while the event loop is anything but idle, so the idle timer cannot unload the
     // model in the middle of a dictation that outlasts it.
@@ -1620,7 +1620,7 @@ fn run(mut config: Config) -> Result<()> {
                         let proxy = recording_proxy.clone();
                         let seconds = config.max_recording_seconds;
                         let microphone = config.microphone.clone();
-                        start_recording(proxy, id, seconds, microphone, on_preview.clone());
+                        start_recording(proxy, id, seconds, microphone, on_recording_work.clone());
                     }
                     State::Recording {
                         mut audio, canceled, ..
