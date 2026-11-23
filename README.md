@@ -107,7 +107,7 @@ Choose **Settings…** from Nemo’s menu, or run `nemo settings`.
 
 These settings save immediately. For other options, choose **Open configuration** from the menu. The file is `~/Library/Application Support/Nemo/config.toml`; restart Nemo after editing it.
 
-The model loads while you record and unloads after **60 idle seconds** by default. To keep it ready for five minutes, change this value in your configuration:
+The model loads while you record. By default, MLX unloads after **20 idle minutes** and the included engine unloads after **60 idle seconds**. To override either timeout, set the number of seconds in your configuration:
 
 ```toml
 idle_unload_seconds = 300

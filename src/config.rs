@@ -62,7 +62,8 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtp_draft_tokens: Option<u8>,
     /// Zero keeps a loaded engine resident until shutdown or an explicit unload.
-    pub idle_unload_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_unload_seconds: Option<u64>,
     #[serde(skip_serializing_if = "is_default")]
     pub preload_model: bool,
     #[serde(skip_serializing_if = "is_default")]
@@ -101,7 +102,7 @@ impl Default for Config {
             backend: Backend::default(),
             mlx_runtime: None,
             mtp_draft_tokens: None,
-            idle_unload_seconds: 60,
+            idle_unload_seconds: None,
             preload_model: false,
             model_warmup: false,
             inference_threads: 0,
@@ -155,6 +156,17 @@ pub fn path() -> PathBuf {
 }
 
 impl Config {
+    pub fn idle_seconds(&self) -> u64 {
+        self.idle_unload_seconds.unwrap_or(match self.backend {
+            Backend::MlxAudio => 20 * 60,
+            Backend::NemoSpeech => 60,
+        })
+    }
+
+    pub fn recording_previews(&self) -> bool {
+        self.backend == Backend::MlxAudio && self.mtp_draft() > 0
+    }
+
     pub fn load() -> Result<Self> {
         ensure!(
             data_dir().is_absolute(),
@@ -341,13 +353,30 @@ mod tests {
         assert!(!config.model_warmup);
         assert_eq!(config.inference_threads, 0);
         assert_eq!(config.encoder_batch_size, 1);
-        assert_eq!(config.idle_unload_seconds, 60);
+        assert_eq!(config.idle_seconds(), 60);
+    }
+
+    #[test]
+    fn mlx_defaults_to_twenty_idle_minutes_and_eight_draft_tokens() {
+        let mlx: Config = toml::from_str("backend = 'mlx-audio'").unwrap();
+        assert_eq!((mlx.idle_seconds(), mlx.mtp_draft()), (1200, 8));
+        assert!(mlx.recording_previews());
+        assert_eq!(Config::default().idle_seconds(), 60);
+        assert!(!Config::default().recording_previews());
+        for seconds in [0, 17, 300] {
+            let config: Config = toml::from_str(&format!(
+                "backend = 'mlx-audio'\nidle_unload_seconds = {seconds}\nmtp_draft_tokens = 0"
+            ))
+            .unwrap();
+            assert_eq!(config.idle_seconds(), seconds);
+            assert!(!config.recording_previews());
+        }
     }
 
     #[test]
     fn five_minute_performance_configuration_round_trips() {
         let config = Config {
-            idle_unload_seconds: 300,
+            idle_unload_seconds: Some(300),
             preload_model: true,
             model_warmup: true,
             inference_threads: 18,
@@ -380,7 +409,7 @@ mod tests {
     #[test]
     fn zero_idle_timeout_allows_resident_inference() {
         let config: Config = toml::from_str("idle_unload_seconds = 0").unwrap();
-        assert_eq!(config.idle_unload_seconds, 0);
+        assert_eq!(config.idle_seconds(), 0);
         assert!(config.validate().is_ok());
     }
 

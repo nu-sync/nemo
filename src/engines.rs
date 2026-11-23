@@ -63,10 +63,6 @@ impl Engines {
         self.primary.loaded()
     }
 
-    pub fn wake_recording_gpu(&self) -> bool {
-        self.demoted.is_none() && self.primary.wake_recording_gpu()
-    }
-
     pub fn start_preview(&self, recording: &Arc<crate::audio::RecordingPreview>) {
         if self.demoted.is_none() {
             self.primary.start_preview(recording);

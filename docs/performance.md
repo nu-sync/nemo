@@ -14,7 +14,59 @@ The [delivery latency update](delivery-latency.md) describes the October 30
 delivery changes and paste measurements. The engine comparison and 48 kHz
 resampling measurements below are from November.
 
-The 128 GB laptop now preloads MLX-Audio at launch and keeps it resident for the session. The model occupies about 27 GB. Recording can begin during the initial load. Between dictations the worker sleeps and the MLX HTTP helper blocks waiting for a request. During recording, the resident profile submits a small GPU operation every second. With speculative decoding enabled, it can also preview at 3, 6, 12 and 24 seconds.
+The current MLX profile uses 2/4/8/12/24-second recording previews, eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout. Recording triggers previews when the required audio arrives. The worker sends no periodic GPU wakes. The November 19 reference profile kept the model resident, used a 2 GB cache, and issued one GPU wake per second during recording.
+
+## Installed MLX profile on battery
+
+On November 23, 2026, the signed app running on the M5 Max (`2fad8f6cb8e0`) moved previews to 2/4/8/12/24 seconds, used the 1 GB cache and eight draft tokens, and unloaded after 1,200 idle seconds. Each audio threshold queues one preview. Periodic GPU wakes are off.
+
+The previous installed profile (`d92527c6b66e`) kept the model resident and issued one GPU wake per second during recording. This differs from the wake-free baseline in the original tuning experiment below. Two independent five-pair series ran on battery in the Mac's existing power mode. The new signed executable ran `transcribe --replay-recording`. The old Rust replay adapter drove the previous signed app's helper with the previous schedule and wakes. Both arms used the same 48 kHz PCM, warm model, and simulated Stop-to-formatted-text boundary. Visit and clip order alternated.
+
+| Clip | Previous median | Installed median | New wait, first / repeat | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| 5 s | 170 ms | 145 ms | 14.1% / 17.5% shorter | 10/10 |
+| 10 s | 237 ms | 188 ms | 23.5% / 17.8% shorter | 7/10 |
+| 15 s | 251 ms | 377 ms | 45.1% / 50.5% longer | 0/10 |
+| 30 s | 368 ms | 494 ms | 32.8% / 38.2% longer | 0/10 |
+
+All 40 timed pairs returned identical raw and formatted transcripts. The installed app replayed all 12 frozen recordings in real time, including 200 and 300 seconds. Every raw and formatted transcript matched the earlier capture-path control, with the same 13 errors across 2,312 reference words. A separate old-versus-new ordinary file CLI comparison on identical WAV bytes also matched 12/12. Comparing a direct file input with the capture-converted input changed the result on three fixtures in the initial diagnostic, so each accuracy comparison uses its own input path.
+
+The menu-bar daemon released its MLX helper 1,200.97 seconds after its last model job. On the next real dictation, the model reloaded during recording. Two ordinary recordings of 4.74 and 6.19 seconds supplied 23 and 16 preview tokens at Stop and reached paste dispatch in 197 and 207 ms. These observations verify live delivery. The paired speed comparisons above use saved audio.
+
+The local evidence and reproduction commands are in `artifacts/performance/shipping-preview/PROTOCOL.md`. Run `uv run --no-project --no-cache artifacts/performance/shipping-preview/verify.py report` to regenerate the paired ranges and per-fixture checks.
+
+## MLX previews with a finite idle timeout
+
+On November 23, 2026, we replayed saved 48 kHz mono PCM on the 128 GB M5 Max on AC power. The app installed before the experiment coupled recording previews to its resident-mode GPU wakes. An isolated Rust controller drove recording ticks and PCM into the worker so every experimental arm could use a 1,200-second idle timeout, eight draft tokens and zero GPU wake requests. Each visit used the installed signed MLX helper, the same NVFP4 weights, a 25 GB wired limit, and a warm model. Elapsed timing starts at simulated Stop and ends when Rust finishes formatting the transcript. Hardware capture closure, paste and visible insertion are outside this measurement.
+
+**Previews off versus on.** At the existing 3/6/12/24-second schedule and 2 GB cache, only the 15-second clip cleared the 5% gate in both independent series. Each series used five alternating pairs per clip. The second reversed the initial order. The 5- and 10-second inputs were the frozen lunch and garden clips. The 15-second input was the opening of the project update.
+
+| Recording | Median Stop, off → on, ten pairs | Median paired reduction, first / repeat | Faster pairs |
+| --- | ---: | ---: | ---: |
+| 5 s | 316 → 307 ms | 2.7% / 1.8% | 7/10 |
+| 10 s | 410 → 387 ms | 4.3% / −2.8% | 6/10 |
+| 15 s | 500 → 391 ms | 21.0% / 21.7% | 9/10 |
+
+**Schedule and cache screening.** Five matched rounds per clip crossed the two schedules with decimal 1 GB and 2 GB cache limits. Each cell below is a median in milliseconds. At the same cache size, the earlier schedule increased the number of preview tokens available at Stop from 10 to 15 on the 5-second clip and from 20 to 27 on the 10-second clip. Both schedules offered 40 tokens on the 15-second clip.
+
+| Preview times | MLX cache | 5 s | 10 s | 15 s | Highest sampled helper footprint on the full corpus |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3/6/12/24 s | 2 GB | 321 | 392 | 409 | 27.78 GB |
+| 3/6/12/24 s | 1 GB | 292 | 378 | 375 | 26.74 GB |
+| 2/4/8/12 s | 2 GB | 143 | 353 | 411 | 27.79 GB |
+| 2/4/8/12 s | 1 GB | 144 | 339 | 385 | 26.74 GB |
+
+**Independent repeat.** The earlier schedule with a 1 GB cache qualified for five fresh pairs against the existing schedule with 2 GB. On the 5-second clip its median paired gains were 54.1% in screening and 26.9% on repeat. The 10-second gains were 13.2% and 52.9%. The candidate won all ten pairs at both durations, although the size of the gain varied. At 15 seconds it gained 1.1% and 14.3%, which missed the repeatable 5% gate. In the fixed-cache 2 GB comparison, the earlier schedule alone gained 55.0% and 10.4% at 5 and 10 seconds and lost 5.9% at 15 seconds. The clearest standalone benefit of the smaller cache was about 1 GB of sampled physical footprint.
+
+All five configurations, including previews off, returned identical raw and formatted transcripts on all twelve frozen fixtures, including 200 and 300 seconds. Every configuration recorded the same 13 word errors across 2,312 reference words. This corpus check shortened the intervals between previews. All short-clip timing series used full elapsed recording intervals.
+
+**The 24-second refresh matters on longer speech.** Five matched rounds on the full 30-second project update measured 522 ms with the existing schedule and 2 GB cache. Ending previews at 12 seconds took 622 ms at 2 GB and 605 ms at 1 GB. At 1 GB, adding 24 seconds as a fifth refresh raised the available hint from 40 to 64 tokens, brought the median to 507 ms and saved a paired median of 98 ms against the four-refresh 1 GB arm. All five pairs favored the fifth refresh. Against the original schedule and 2 GB, the paired gain was 4.4%, below the 5% gate. The five-refresh version matched the control's raw and formatted text on the entire frozen corpus and the 15-second excerpt. The repeated short-clip gains above were measured with the four-refresh implementation. Both versions schedule the same prefixes before 24 seconds.
+
+**Idle expiry.** The production worker released a CPU-only test process after 1,199.996 seconds of actual idle time. A separate three-second timeout check used the real MLX helper, kept it available through a five-second recording, observed its exit after Stop and saw a new helper PID return the same transcript after reload.
+
+**Cost of the earlier previews.** On the 15-second clip, a single refresh at 12 seconds and three refreshes at 3, 6 and 12 seconds each offered 40 tokens and returned identical raw and formatted text. Across two five-pair series, the helper used about 3.6–3.7 ms of CPU before Stop, down from 14.1 ms in both controls. Median paired Stop latency improved by 6.4% and 4.0%, missing the repeatable 5% gate. The 12/24-second schedule also matched all twelve frozen transcripts. Energy use was unmeasured.
+
+Across all comparisons, the worker and helper logs corroborated 190 elapsed timing replays and 85 accuracy replays with zero GPU wake requests. The experimental controller, matched rows, excluded visits, helper logs, and timing protocol are under `artifacts/performance/finite-preview-nov23/`. The reproduction script `artifacts/performance/finite-preview-nov23/reproduce.sh` expects the original checkout at `af310317` and the pre-change signed helper.
 
 ## Short dictation previews
 

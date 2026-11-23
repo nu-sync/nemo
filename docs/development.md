@@ -72,7 +72,7 @@ Migration verifies every SHA-256 first, publishes the managed files, and updates
 
 Combinations such as `Control+Shift+Space` are also supported as the `hotkey` value.
 
-For a Mac with enough unified memory to dedicate to dictation, set `idle_unload_seconds = 0` and `preload_model = true`. Nemo loads the model once in the background at launch and leaves recording available during loading. Between dictations the worker sleeps. While the microphone is recording, the resident MLX profile submits a small GPU operation every second. With speculative decoding enabled, it can preview at 3, 6, 12 and 24 seconds. Stop submits the full audio immediately and uses the latest completed preview. Stopping or canceling the recording ends these submissions. The MLX engine occupies about 27 GB on the 128 GB M5 Max. To release that memory after five idle minutes, use `idle_unload_seconds = 300`. With `preload_model = false`, the first recording starts the load.
+MLX uses eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout by default. During capture it previews the first 2, 4, 8, 12 and 24 seconds of audio. Stop submits the complete recording with the latest finished preview. The worker sleeps between preview requests and issues no periodic GPU wakes. Set `mtp_draft_tokens = 0` to disable speculation and previews. To override the idle timeout, set `idle_unload_seconds` in seconds. Zero keeps the model resident until shutdown or explicit unload. Set `preload_model = true` to start loading MLX in the background when the app opens. The included engine defaults to 60 idle seconds.
 
 `backend` selects the engine (`nemo-speech` or `mlx-audio`); leave it out to use `mlx-audio` when it is [set up](mlx-audio-setup.md) and `nemo-speech` otherwise. `mtp_draft_tokens` (0–8) applies to `mlx-audio` only. `inference_threads = 0` selects the runtime default (eight on this laptop); `encoder_batch_size` accepts 1–16. See [performance measurements and profiling](performance.md) before tuning these settings.
 
@@ -93,11 +93,14 @@ For a Mac with enough unified memory to dedicate to dictation, set `idle_unload_
 ./target/release/nemo model download
 ./target/release/nemo model verify
 ./target/release/nemo transcribe recording.wav
+./target/release/nemo transcribe --replay-recording --json saved-48khz-mono-pcm16.wav
 ./target/release/nemo transcribe recording.wav --copy
 ./target/release/nemo transcribe recording.wav --paste
 ```
 
 `transcribe` starts its own temporary model process and shuts it down on completion. Use the daemon for repeated dictation so recordings can reuse a loaded model. A normal exit, Control-C, or SIGTERM releases the child process. Audio captured by the daemon stays in memory and is discarded after use; no transcript history is saved. The clipboard retains the latest transcript.
+
+`transcribe --replay-recording` feeds a saved 48 kHz mono PCM16 WAV at recording speed without using the microphone or clipboard. With `--json`, each result includes the raw `text`, the `formatted` transcript, the number of `preview_tokens` offered at Stop, and `stop_to_text_ms` through formatting. Multiple files share the same helper. The initial model load occurs before each file's replay clock starts if a load is needed.
 
 **Download model** in the menu or `model download` resumes interrupted downloads into `.part` files. Only files with the pinned size and SHA-256 become usable weights. Downloads and migrations share an exclusive lock; canceling retains resumable data. `model verify` checks the managed model, regardless of custom configuration paths.
 

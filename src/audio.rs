@@ -72,9 +72,12 @@ pub struct Recording {
     sample_rate: u32,
     level: Arc<LevelMeter>,
     pub microphone: Microphone,
+    pub preview: Option<Arc<RecordingPreview>>,
 }
 
-const PREVIEW_SECONDS: [usize; 4] = [3, 6, 12, 24];
+const PREVIEW_SECONDS: [usize; 5] = [2, 4, 8, 12, 24];
+
+pub type PreviewCallback = Arc<dyn Fn(Weak<RecordingPreview>) + Send + Sync>;
 
 /// Only the live recording owns this result. A late preview cannot reach the next recording.
 pub struct RecordingPreview {
@@ -94,13 +97,21 @@ impl RecordingPreview {
         })
     }
 
+    pub fn crosses_threshold(start: usize, end: usize, sample_rate: u32) -> bool {
+        let rate = sample_rate as usize;
+        PREVIEW_SECONDS.iter().any(|seconds| {
+            let frame = seconds * rate;
+            start < frame && frame <= end
+        })
+    }
+
     pub fn take_prefix(&self) -> Option<(usize, Vec<f32>, u32)> {
         let submitted = self.submitted.load(Ordering::Relaxed);
         if submitted == PREVIEW_SECONDS.len() {
             return None;
         }
         let samples = self.samples.upgrade()?;
-        let samples = samples.try_lock().ok()?;
+        let samples = samples.lock().unwrap();
         let rate = self.sample_rate as usize;
         let available = PREVIEW_SECONDS.partition_point(|s| s * rate <= samples.len());
         if available <= submitted
@@ -128,12 +139,16 @@ impl RecordingPreview {
 }
 
 impl Recording {
-    pub fn start(max_seconds: u64, selected: Option<&Microphone>) -> Result<Self> {
+    pub fn start(
+        max_seconds: u64,
+        selected: Option<&Microphone>,
+        on_preview: Option<PreviewCallback>,
+    ) -> Result<Self> {
         let inputs = Inputs::current()?;
         let microphone = inputs
             .resolve(selected)
             .context("No microphone available. Connect one or choose an input in Nemo Settings")?;
-        match Self::open(max_seconds, microphone) {
+        match Self::open(max_seconds, microphone, on_preview.clone()) {
             Ok(recording) => Ok(recording),
             Err(error) => {
                 // macOS may have changed the default while the first input was opening.
@@ -144,7 +159,7 @@ impl Recording {
                     .filter(|device| device.id != microphone.id);
                 if let Some(fallback) = fallback {
                     eprintln!("Could not open {}: {error:#}", microphone.name);
-                    return Self::open(max_seconds, fallback)
+                    return Self::open(max_seconds, fallback, on_preview)
                         .with_context(|| format!("Could not open {}", fallback.name));
                 }
                 Err(error).with_context(|| {
@@ -157,7 +172,11 @@ impl Recording {
         }
     }
 
-    fn open(max_seconds: u64, microphone: &Microphone) -> Result<Self> {
+    fn open(
+        max_seconds: u64,
+        microphone: &Microphone,
+        on_preview: Option<PreviewCallback>,
+    ) -> Result<Self> {
         let device = cpal::default_host()
             .device_by_id(&microphone.id.parse()?)
             .context("Microphone disconnected before recording started")?;
@@ -169,32 +188,33 @@ impl Recording {
         let samples = Arc::new(Mutex::new(Vec::new()));
         let error = Arc::new(Mutex::new(None));
         let level = Arc::new(LevelMeter::default());
+        let preview = on_preview
+            .as_ref()
+            .map(|_| RecordingPreview::new(&samples, sample_rate));
+        let notify = on_preview.zip(preview.as_ref().map(Arc::downgrade));
         let cap = sample_rate as usize * max_seconds as usize;
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => {
-                build::<f32>(&device, &config, &samples, &error, &level, cap)?
+                build::<f32>(&device, &config, &samples, &error, &level, cap, notify)?
             }
             cpal::SampleFormat::I16 => {
-                build::<i16>(&device, &config, &samples, &error, &level, cap)?
+                build::<i16>(&device, &config, &samples, &error, &level, cap, notify)?
             }
             cpal::SampleFormat::U16 => {
-                build::<u16>(&device, &config, &samples, &error, &level, cap)?
+                build::<u16>(&device, &config, &samples, &error, &level, cap, notify)?
             }
             format => bail!("Unsupported microphone sample format: {format}"),
         };
         stream.play()?;
         Ok(Self {
             microphone: microphone.clone(),
+            preview,
             stream,
             samples,
             error,
             sample_rate,
             level,
         })
-    }
-
-    pub fn preview(&self) -> Arc<RecordingPreview> {
-        RecordingPreview::new(&self.samples, self.sample_rate)
     }
 
     pub fn take_level(&self) -> f32 {
@@ -211,16 +231,20 @@ impl Recording {
             bail!("Microphone failed: {error}");
         }
         let samples = self.samples.lock().unwrap();
-        ensure!(
-            samples.len() >= self.sample_rate as usize / 4,
-            "Recording was shorter than 250 ms"
-        );
-        ensure!(
-            samples.iter().any(|s| s.abs() > 0.001),
-            "No audio detected. Check the microphone and its permission"
-        );
-        wav(&samples, self.sample_rate)
+        finish_samples(&samples, self.sample_rate)
     }
+}
+
+pub fn finish_samples(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
+    ensure!(
+        samples.len() >= sample_rate as usize / 4,
+        "Recording was shorter than 250 ms"
+    );
+    ensure!(
+        samples.iter().any(|s| s.abs() > 0.001),
+        "No audio detected. Check the microphone and its permission"
+    );
+    wav(samples, sample_rate)
 }
 
 pub fn probe(microphone: &Microphone) -> Result<String> {
@@ -261,6 +285,7 @@ fn build<T>(
     error: &Arc<Mutex<Option<String>>>,
     level: &Arc<LevelMeter>,
     cap: usize,
+    notify: Option<(PreviewCallback, Weak<RecordingPreview>)>,
 ) -> Result<cpal::Stream>
 where
     T: SizedSample,
@@ -270,6 +295,7 @@ where
     let error = error.clone();
     let level = level.clone();
     let channels = config.channels as usize;
+    let rate = config.sample_rate;
     Ok(device.build_input_stream(
         config,
         move |data: &[T], _| {
@@ -280,6 +306,13 @@ where
                 frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32
             }));
             level.publish(&samples[start..]);
+            let end = samples.len();
+            drop(samples);
+            if let Some((submit, preview)) = &notify
+                && RecordingPreview::crosses_threshold(start, end, rate)
+            {
+                submit(preview.clone());
+            }
         },
         move |err| {
             *error.lock().unwrap() = Some(err.to_string());
@@ -377,7 +410,7 @@ mod tests {
             "Disconnected test input",
         );
         for selection in [Some(&missing), None, Some(default)] {
-            let recording = Recording::start(1, selection).unwrap();
+            let recording = Recording::start(1, selection, None).unwrap();
             assert_eq!(recording.microphone.id, default.id);
             std::thread::sleep(std::time::Duration::from_millis(400));
             assert!(recording.error().is_none(), "{:?}", recording.error());
@@ -413,23 +446,33 @@ mod tests {
     }
 
     #[test]
+    fn capture_requests_one_preview_at_each_complete_audio_prefix() {
+        let observed: Vec<_> = (0..60)
+            .filter(|frame| RecordingPreview::crosses_threshold(*frame, frame + 1, 2))
+            .map(|frame| frame + 1)
+            .collect();
+        assert_eq!(observed, [4, 8, 16, 24, 48]);
+        assert!(!RecordingPreview::crosses_threshold(48, 48, 2));
+    }
+
+    #[test]
     fn recording_offers_the_latest_available_prefix_and_keeps_the_newest_result() {
-        let samples = Arc::new(Mutex::new(vec![1.0; 5]));
+        let samples = Arc::new(Mutex::new(vec![1.0; 3]));
         let preview = RecordingPreview::new(&samples, 2);
         assert!(preview.take_prefix().is_none());
         samples.lock().unwrap().push(1.0);
         let (first, prefix, rate) = preview.take_prefix().unwrap();
-        assert_eq!((first, prefix.len(), rate), (0, 6, 2));
+        assert_eq!((first, prefix.len(), rate), (0, 4, 2));
         assert!(preview.take_prefix().is_none());
         samples.lock().unwrap().resize(26, 2.0);
         let (latest, prefix, _) = preview.take_prefix().unwrap();
-        assert_eq!((latest, prefix.len()), (2, 24));
+        assert_eq!((latest, prefix.len()), (3, 24));
         preview.publish(latest, vec![3]);
         preview.publish(first, vec![1]);
         assert_eq!(preview.ready(), Some(&vec![3]));
         samples.lock().unwrap().resize(50, 3.0);
         assert_eq!(preview.take_prefix().unwrap().1.len(), 48);
-        preview.publish(3, vec![]);
+        preview.publish(4, vec![]);
         assert_eq!(preview.ready(), Some(&vec![3]));
         assert!(preview.take_prefix().is_none());
         assert!(RecordingPreview::new(&samples, 2).ready().is_none());

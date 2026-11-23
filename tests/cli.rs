@@ -53,6 +53,28 @@ fn cli(root: &std::path::Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn recording_replay_rejects_unsupported_pcm_before_loading_a_model() {
+    let root = tempfile::tempdir().unwrap();
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut wav = hound::WavWriter::create(root.path().join("input.wav"), spec).unwrap();
+    wav.write_sample(1_i16).unwrap();
+    wav.finalize().unwrap();
+
+    let output = cli(
+        root.path(),
+        &["transcribe", "--replay-recording", "input.wav"],
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("48 kHz mono PCM16"));
+    assert!(!root.path().join("data/inference.log").exists());
+}
+
+#[test]
 fn fresh_configuration_works_outside_the_checkout() {
     let root = tempfile::tempdir().unwrap();
     let output = cli(root.path(), &["config"]);

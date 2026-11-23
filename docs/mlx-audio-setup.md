@@ -34,7 +34,7 @@ backend = "mlx-audio"
 mtp_draft_tokens = 8
 ```
 
-The bundled runner applies the wired-memory limit that keeps inference tails tight, and a 2 GB limit on MLX's buffer cache. Without the cache limit the engine grew from 30 GB after load to 38–40 GB after long clips. It `exec`s the interpreter so Nemo owns and reaps the engine process, and refuses to start a third engine. Do not bypass the runner.
+The bundled runner applies the wired-memory limit that keeps inference tails tight, and a 1 GB limit on MLX's buffer cache. Without the cache limit the engine grew from 30 GB after load to 38–40 GB after long clips. It `exec`s the interpreter so Nemo owns and reaps the engine process, and refuses to start a third engine. Do not bypass the runner.
 
 ## Return to the included backend
 

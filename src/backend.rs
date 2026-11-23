@@ -323,18 +323,6 @@ impl Backend {
         self.process.0.lock().unwrap().retire(false)
     }
 
-    pub fn wake_recording_gpu(&self) -> bool {
-        let Ok(Some(base)) = self.process.endpoint() else {
-            return false;
-        };
-        self.client
-            .post(format!("{base}/v1/gpu/wake"))
-            .bearer_auth(&self.key)
-            .timeout(Duration::from_millis(50))
-            .send()
-            .is_ok_and(|response| response.status().is_success())
-    }
-
     pub fn start_preview(&self, recording: &Arc<crate::audio::RecordingPreview>) {
         let Some((index, samples, rate)) = recording.take_prefix() else {
             return;
@@ -533,6 +521,7 @@ impl Backend {
                 "total_ms": started.elapsed().as_secs_f64() * 1000.0,
                 "reused_model": reused_model,
                 "real_time_factor": real_time_factor,
+                "preview_tokens": hint.len(),
             }),
         );
         result

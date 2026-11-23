@@ -14,6 +14,7 @@ mod output;
 mod permissions;
 mod prerequisite;
 mod readiness;
+mod replay;
 mod settings;
 mod shortcut;
 mod sounds;
@@ -123,6 +124,9 @@ enum Command {
     Transcribe {
         #[arg(required = true)]
         files: Vec<PathBuf>,
+        /// Time recording previews and Stop on a saved 48 kHz mono PCM16 WAV, at recording speed.
+        #[arg(long, conflicts_with_all = ["copy", "paste"])]
+        replay_recording: bool,
         #[arg(long)]
         copy: bool,
         #[arg(long)]
@@ -195,7 +199,7 @@ enum Event {
     WorkerUnloaded,
 }
 enum Job {
-    WakeRecordingGpu(Weak<audio::RecordingPreview>),
+    PreviewRecording(Weak<audio::RecordingPreview>),
     Prepare(Arc<AtomicBool>),
     Download(u64, Arc<AtomicBool>),
     Warm(u64, Arc<AtomicBool>),
@@ -247,7 +251,6 @@ enum State {
     },
     Recording {
         audio: audio::Recording,
-        gpu_session: Option<Arc<audio::RecordingPreview>>,
         started: Instant,
         canceled: Arc<AtomicBool>,
     },
@@ -620,6 +623,7 @@ fn execute() -> Result<()> {
         }
         Command::Transcribe {
             files,
+            replay_recording,
             copy,
             paste,
             json,
@@ -630,15 +634,32 @@ fn execute() -> Result<()> {
             );
             let process = backend::Process::default();
             let stopping = process.clone();
-            ctrlc::set_handler(move || stopping.shutdown())?;
+            let canceled = Arc::new(AtomicBool::new(false));
+            let interrupt = canceled.clone();
+            ctrlc::set_handler(move || {
+                interrupt.store(true, Ordering::Release);
+                stopping.shutdown();
+            })?;
             let remove_trailing_period = config.remove_trailing_period;
-            let mut engines = engines::Engines::new(config, process, engines::Status::default())?;
+            let mut engines =
+                engines::Engines::new(config.clone(), process, engines::Status::default())?;
             for file in files {
                 anyhow::ensure!(
                     fs::metadata(&file)?.len() <= 64 * 1024 * 1024,
                     "WAV input exceeds 64 MiB"
                 );
-                let text = engines.transcribe(fs::read(&file)?, &AtomicBool::new(false), &[])?;
+                if replay_recording {
+                    let replay = replay::transcribe(&file, &mut engines, &config, &canceled)?;
+                    if json {
+                        let mut row = serde_json::to_value(&replay)?;
+                        row["file"] = serde_json::json!(file);
+                        println!("{row}");
+                    } else {
+                        println!("{}", replay.formatted);
+                    }
+                    continue;
+                }
+                let text = engines.transcribe(fs::read(&file)?, &canceled, &[])?;
                 let text = output::format_transcript(&text, remove_trailing_period);
                 if copy || paste {
                     output::deliver(text, paste, &AtomicBool::new(false))?;
@@ -686,11 +707,13 @@ fn startup_action(
     if bundled && config.model == managed_model && !managed_ready {
         Some("download")
     } else if config.preload_model && config.check_assets().is_ok() {
-        Some(if config.idle_unload_seconds == 0 {
-            "prepare"
-        } else {
-            "warm"
-        })
+        Some(
+            if config.backend == config::Backend::MlxAudio || config.idle_seconds() == 0 {
+                "prepare"
+            } else {
+                "warm"
+            },
+        )
     } else {
         None
     }
@@ -701,10 +724,11 @@ fn start_recording(
     id: u64,
     seconds: u64,
     microphone: Option<audio::Microphone>,
+    on_preview: Option<audio::PreviewCallback>,
 ) {
     let requested = Instant::now();
     thread::spawn(move || {
-        let result = audio::Recording::start(seconds, microphone.as_ref());
+        let result = audio::Recording::start(seconds, microphone.as_ref(), on_preview);
         telemetry::emit_result(
             "capture_start",
             &result,
@@ -724,20 +748,11 @@ fn worker(
     mut backend: engines::Engines,
     mut downloader: Option<download::Downloader>,
     idle_timeout: Duration,
-    preview: bool,
     busy: Arc<AtomicBool>,
     report: impl Fn(Event) -> bool,
 ) {
-    let mut gpu_session = Weak::<audio::RecordingPreview>::new();
     loop {
-        let received = if gpu_session.strong_count() > 0 {
-            match receiver.recv_timeout(Duration::from_secs(1)) {
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    Ok(Job::WakeRecordingGpu(gpu_session.clone()))
-                }
-                other => other,
-            }
-        } else if !idle_timeout.is_zero() && backend.loaded() {
+        let received = if !idle_timeout.is_zero() && backend.loaded() {
             receiver.recv_timeout(idle_timeout)
         } else {
             receiver
@@ -747,16 +762,10 @@ fn worker(
         match received {
             Ok(job) => {
                 let (id, result) = match job {
-                    Job::WakeRecordingGpu(session) => {
-                        gpu_session = if session.strong_count() > 0 && backend.wake_recording_gpu()
-                        {
-                            if preview && let Some(recording) = session.upgrade() {
-                                backend.start_preview(&recording);
-                            }
-                            session
-                        } else {
-                            Weak::new()
-                        };
+                    Job::PreviewRecording(session) => {
+                        if let Some(recording) = session.upgrade() {
+                            backend.start_preview(&recording);
+                        }
                         continue;
                     }
                     Job::Prepare(canceled) => {
@@ -970,7 +979,7 @@ fn run(mut config: Config) -> Result<()> {
         "daemon_started",
         serde_json::json!({
             "backend": config.backend.label(),
-            "idle_unload_seconds": config.idle_unload_seconds,
+            "idle_unload_seconds": config.idle_seconds(),
             "preload_model": config.preload_model,
             "paste": config.paste,
             "max_recording_seconds": config.max_recording_seconds,
@@ -1036,8 +1045,13 @@ fn run(mut config: Config) -> Result<()> {
     let backend = engines::Engines::new(config.clone(), process.clone(), engine_status.clone())?;
     let (jobs, receiver) = mpsc::channel();
     let proxy = event_loop.create_proxy();
-    let idle_timeout = Duration::from_secs(config.idle_unload_seconds);
-    let config_preview_enabled = config.mtp_draft() > 0;
+    let idle_timeout = Duration::from_secs(config.idle_seconds());
+    let on_preview = config.recording_previews().then(|| {
+        let jobs = jobs.clone();
+        Arc::new(move |session| {
+            let _ = jobs.send(Job::PreviewRecording(session));
+        }) as audio::PreviewCallback
+    });
     // Set while the event loop is anything but idle, so the idle timer cannot unload the
     // model in the middle of a dictation that outlasts it.
     let busy = Arc::new(AtomicBool::new(false));
@@ -1048,7 +1062,6 @@ fn run(mut config: Config) -> Result<()> {
             backend,
             downloader,
             idle_timeout,
-            config_preview_enabled,
             worker_busy,
             |event| proxy.send_event(event).is_ok(),
         )
@@ -1374,15 +1387,7 @@ fn run(mut config: Config) -> Result<()> {
                     match result {
                             Ok(audio) => {
                                 let canceled = canceled.clone();
-                                // Leaving Recording drops the only owner on stop, cancel, or input loss.
-                                let gpu_session = (config.backend == config::Backend::MlxAudio
-                                    && config.idle_unload_seconds == 0).then(|| {
-                                    let session = audio.preview();
-                                    let _ = jobs.send(Job::WakeRecordingGpu(Arc::downgrade(&session)));
-                                    session
-                                });
                                 state = State::Recording {
-                                    gpu_session,
                                     audio,
                                     started: Instant::now(),
                                     canceled: canceled.clone(),
@@ -1615,14 +1620,14 @@ fn run(mut config: Config) -> Result<()> {
                         let proxy = recording_proxy.clone();
                         let seconds = config.max_recording_seconds;
                         let microphone = config.microphone.clone();
-                        start_recording(proxy, id, seconds, microphone);
+                        start_recording(proxy, id, seconds, microphone, on_preview.clone());
                     }
                     State::Recording {
-                        audio, canceled, gpu_session, ..
+                        mut audio, canceled, ..
                     } => {
                         let stopped = Instant::now();
                         telemetry::advance_dictation(telemetry::Phase::Audio);
-                        let hint = gpu_session.and_then(|session| session.ready().cloned()).unwrap_or_default();
+                        let hint = audio.preview.take().and_then(|session| session.ready().cloned()).unwrap_or_default();
                         next_id += 1;
                         let id = next_id;
                         let proxy = recording_proxy.clone();
@@ -1860,7 +1865,6 @@ mod worker_tests {
                 engines::Engines::fake(engine, None),
                 None,
                 idle_timeout,
-                false,
                 worker_busy,
                 |event| sender.send(event).is_ok(),
             )
@@ -2026,7 +2030,7 @@ mod startup_tests {
             Some("warm")
         );
         let resident = Config {
-            idle_unload_seconds: 0,
+            idle_unload_seconds: Some(0),
             ..config
         };
         assert_eq!(
