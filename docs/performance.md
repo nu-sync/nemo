@@ -24,6 +24,12 @@ Two five-pair AC series on the 128 GB M5 Max measured warm replay from simulated
 
 The local evidence and replay command are in `artifacts/performance/swarm-20261124-ztzoJv/REPORT.md`.
 
+### Deeper drafting after an extended hint
+
+When verification accepts more than 64 preview tokens, the default eight-token configuration uses up to 11 drafts for the remaining final decode. In five alternating pairs on AC, the 30-second replay median went from 327 to 311 ms. The paired median gain was 4.89%, just below the 5% screen. The five-second guard was 1.0% slower by paired median. All timed transcripts matched exactly. All 12 frozen recordings through 300 seconds matched raw and formatted text exactly.
+
+The local protocol and paired results are in `artifacts/performance/swarm-next-aNGulz/PLAN.md`.
+
 ## Recovering long-clip latency on battery
 
 The November 23 regression added a median **124 ms inside the MLX request** on both the 15- and 30-second clips. Audio finalization and formatting together changed by less than 2 ms. The last completed previews offered the same 40 and 64 tokens in both builds. What changed was the gap since the last GPU submission. The previous build issued a small Metal operation every second during capture. With periodic wakes disabled, the last previews started three and six seconds before Stop. Earlier interval experiments on this Mac also found a latency increase between two and three seconds of GPU inactivity.

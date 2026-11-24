@@ -144,3 +144,34 @@ class DraftTests(unittest.TestCase):
                         prefill.assert_not_called()
                         verify.assert_called_once()
                         self.assertEqual(verify.call_args.args[2], offered[:expected])
+
+    def test_a_deeper_final_draft_requires_an_extended_verified_hint(self):
+        import mlx.core as mx
+        from nemo_mtp import verified_tokens
+
+        backbone = SimpleNamespace(embeddings=lambda tokens: tokens)
+        model = SimpleNamespace(
+            llm=SimpleNamespace(
+                backbone=backbone, lm_head=None, mtp=lambda inputs, hidden, cache: hidden
+            ),
+            config=SimpleNamespace(eos_token_id=[]),
+        )
+        state = ([], [SimpleNamespace(offset=0)], mx.zeros((1, 1, 1)), 1)
+        offered = [1] * 80
+
+        class ObservedVerification(Exception):
+            pass
+
+        with patch("nemo_mtp.verified_preview") as preview, \
+             patch("nemo_mtp.propose", return_value=mx.array(2)), \
+             patch("nemo_mtp.target_hidden", side_effect=ObservedVerification) as target:
+            for accepted, depth, expected in ((64, 8, 9), (65, 8, 12), (65, 4, 5)):
+                with self.subTest(accepted=accepted, depth=depth):
+                    preview.return_value = (state, offered[:accepted])
+                    target.reset_mock()
+                    tokens = verified_tokens(model, mx.zeros((439, 1)), None, depth, 128, offered)
+                    for _ in range(accepted + 1):
+                        self.assertEqual(next(tokens), 1)
+                    with self.assertRaises(ObservedVerification):
+                        next(tokens)
+                    self.assertEqual(target.call_args.args[1].shape, (1, expected))

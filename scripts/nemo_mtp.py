@@ -136,6 +136,8 @@ def verified_tokens(model, embeddings, draft, depth, max_tokens, hint=(), checkp
         if state is None:
             hint = []
             state = prefill(lm, embeddings, checkpoint)
+    if len(hint) > PREVIEW_TOKENS and checkpoint is None and depth == 8:
+        depth = 11
     cache, draft_cache, draft_hidden, current = state
     del state
     yield from hint
