@@ -16,6 +16,14 @@ resampling measurements below are from November.
 
 The current MLX profile uses 2/4/8/12/24-second recording previews, eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout. Recording triggers previews when the required audio arrives. After eight seconds, speech pauses and resumptions can also wake the GPU. Periodic wakes remain off. The November 19 reference profile kept the model resident, used a 2 GB cache, and issued one GPU wake per second during recording.
 
+## Longer 24-second recording previews on AC
+
+The 48 kHz mono MLX capture path now offers up to 80 tokens at the 24-second preview. Earlier previews keep the 64-token cap. At Stop, the helper uses the extra tokens only when they fit in the existing 512-position verification window.
+
+Two five-pair AC series on the 128 GB M5 Max measured warm replay from simulated Stop to formatted text. The 30-second project update fell from 368 to 334 ms, then from 366 to 328 ms with initial order reversed. The paired median reductions were 9.3% and 9.5%. The mixed-duration runs had a guard miss at five seconds (8.0% slower) and at ten seconds (9.8% slower). In focused five-pair runs those clips were 1.3% slower and 1.8% faster respectively. All 12 frozen recordings through 300 seconds matched raw and formatted text exactly. Both builds interrupted an active preview at the 24.4-second cutoff and returned identical text. Battery and live visible insertion were outside this run.
+
+The local evidence and replay command are in `artifacts/performance/swarm-20261124-ztzoJv/REPORT.md`.
+
 ## Recovering long-clip latency on battery
 
 The November 23 regression added a median **124 ms inside the MLX request** on both the 15- and 30-second clips. Audio finalization and formatting together changed by less than 2 ms. The last completed previews offered the same 40 and 64 tokens in both builds. What changed was the gap since the last GPU submission. The previous build issued a small Metal operation every second during capture. With periodic wakes disabled, the last previews started three and six seconds before Stop. Earlier interval experiments on this Mac also found a latency increase between two and three seconds of GPU inactivity.

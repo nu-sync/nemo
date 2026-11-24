@@ -194,13 +194,14 @@ class Handler(BaseHTTPRequestHandler):
         self.preview_checkpoint()
         audio = resample_capture(path, self.model.sample_rate)
         self.preview_checkpoint()
+        token_limit = 80 if getattr(audio, "size", 0) == 24 * self.model.sample_rate else PREVIEW_TOKENS
         tokens = []
         for token in audio_tokens(self.model, audio, self.draft_head, self.draft, 2048,
                                   checkpoint=self.preview_checkpoint):
             if token in self.model.config.eos_token_id:
                 break
             tokens.append(token)
-            if len(tokens) == PREVIEW_TOKENS:
+            if len(tokens) == token_limit:
                 break
         return {"tokens": tokens}
 
@@ -229,10 +230,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"tokens": []})
                 return
             if self.draft_head is not None and self.headers.get("X-Nemo-Preview"):
-                from nemo_mtp import PREVIEW_TOKENS
                 hint = json.loads(self.headers["X-Nemo-Preview"])
                 vocab = self.model.llm.lm_head.weight.shape[0]
-                if (not isinstance(hint, list) or len(hint) > PREVIEW_TOKENS or
+                if (not isinstance(hint, list) or len(hint) > 80 or
                         any(type(t) is not int or not 0 <= t < vocab or
                             t in self.model.config.eos_token_id for t in hint)):
                     raise ValueError("invalid preview tokens")

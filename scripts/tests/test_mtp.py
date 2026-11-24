@@ -116,3 +116,31 @@ class DraftTests(unittest.TestCase):
             tokens = list(verified_tokens(model, mx.zeros((2, 1)), None, 8, 12))
         self.assertEqual(tokens, [1, 2, 3, 4])
         self.assertEqual(model.llm.backbone.verification_batches, [[1, 4], [2, 4], [3, 4]])
+
+
+    def test_extended_preview_uses_only_space_in_the_existing_prefill_window(self):
+        import mlx.core as mx
+        from nemo_mtp import verified_tokens
+
+        model = SimpleNamespace(llm=object(), config=SimpleNamespace(eos_token_id=[]))
+        offered = list(range(80))
+
+        class ObservedDispatch(Exception):
+            pass
+
+        with patch("nemo_mtp.verified_preview", side_effect=ObservedDispatch) as verify, \
+             patch("nemo_mtp.prefill", side_effect=ObservedDispatch) as prefill:
+            for prompt, expected in ((432, 80), (439, 73), (448, 64), (449, None)):
+                with self.subTest(prompt=prompt):
+                    verify.reset_mock()
+                    prefill.reset_mock()
+                    tokens = verified_tokens(model, mx.zeros((prompt, 1)), None, 8, 128, offered)
+                    with self.assertRaises(ObservedDispatch):
+                        next(tokens)
+                    if expected is None:
+                        verify.assert_not_called()
+                        prefill.assert_called_once()
+                    else:
+                        prefill.assert_not_called()
+                        verify.assert_called_once()
+                        self.assertEqual(verify.call_args.args[2], offered[:expected])

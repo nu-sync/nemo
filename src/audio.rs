@@ -189,6 +189,10 @@ impl RecordingPreview {
         ))
     }
 
+    pub fn token_limit(index: usize) -> usize {
+        if PREVIEW_SECONDS[index] == 24 { 80 } else { 64 }
+    }
+
     pub fn publish(&self, index: usize, tokens: Vec<u32>) {
         if !tokens.is_empty() {
             let _ = self.tokens[index].set(tokens);
@@ -516,6 +520,14 @@ mod tests {
             .collect();
         assert_eq!(observed, [4, 8, 16, 24, 48]);
         assert!(!RecordingPreview::crosses_threshold(48, 48, 2));
+    }
+
+    #[test]
+    fn only_the_24_second_preview_accepts_more_than_64_tokens() {
+        assert_eq!(
+            [0, 1, 2, 3, 4].map(RecordingPreview::token_limit),
+            [64, 64, 64, 64, 80]
+        );
     }
 
     #[test]

@@ -125,7 +125,9 @@ def verified_tokens(model, embeddings, draft, depth, max_tokens, hint=(), checkp
         return
     lm = model.llm
     eos = model.config.eos_token_id
-    k = min(len(hint), PREVIEW_TOKENS, max_tokens - 1)
+    fit = PREFILL_CHUNK - len(embeddings)
+    limit = max(PREVIEW_TOKENS, min(80, fit))
+    k = min(len(hint), limit, max_tokens - 1)
     hint = list(hint[:k])
     state = None
     with mx.stream(generation_stream):

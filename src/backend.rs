@@ -365,7 +365,7 @@ impl Backend {
                 .and_then(|r| r.error_for_status())
                 .and_then(|r| r.json::<Preview>());
             if let Ok(result) = response
-                && result.tokens.len() <= 64
+                && result.tokens.len() <= crate::audio::RecordingPreview::token_limit(index)
                 && let Some(recording) = recording.upgrade()
             {
                 recording.publish(index, result.tokens);
