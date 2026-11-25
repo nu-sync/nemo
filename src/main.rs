@@ -193,7 +193,7 @@ enum Event {
     SettingsChanged(settings::Change),
     QuitIfIdle(mpsc::Sender<bool>),
     RecordingStarted(u64, Result<audio::Recording>),
-    RecordingFinished(u64, Result<Vec<u8>>, Instant, Vec<u32>),
+    RecordingFinished(u64, Result<(Vec<u8>, Vec<u32>)>, Instant),
     InputsChanged(Instant, Result<audio::Inputs>),
     Finished(u64, Result<Outcome>),
     WorkerUnloaded,
@@ -1413,7 +1413,7 @@ fn run(mut config: Config) -> Result<()> {
                 }
                 _ => None,
             },
-            TaoEvent::UserEvent(Event::RecordingFinished(id, result, stopped, hint)) => {
+            TaoEvent::UserEvent(Event::RecordingFinished(id, result, stopped)) => {
                 if state.finish_cancellation(id, Completion::Audio) {
                     set_status("Canceled");
                     telemetry::finish_dictation(telemetry::Ending::Canceled);
@@ -1422,7 +1422,7 @@ fn run(mut config: Config) -> Result<()> {
                     && *current == id
                 {
                     match result {
-                            Ok(wav) => {
+                            Ok((wav, hint)) => {
                                 let canceled = state.audio_finalized(id).unwrap();
                                 let _ = jobs.send(Job::Transcribe(id, wav, canceled, stopped, hint));
                                 telemetry::advance_dictation(telemetry::Phase::Transcription);
@@ -1627,16 +1627,16 @@ fn run(mut config: Config) -> Result<()> {
                     } => {
                         let stopped = Instant::now();
                         telemetry::advance_dictation(telemetry::Phase::Audio);
-                        let hint = audio.preview.take().and_then(|session| session.ready().cloned()).unwrap_or_default();
+                        let preview = audio.preview.take().map(|session| session.ready()).unwrap_or_default();
                         next_id += 1;
                         let id = next_id;
                         let proxy = recording_proxy.clone();
                         thread::spawn(move || {
-                            let recording = audio.finish();
+                            let recording = audio.finish(preview);
                             telemetry::emit_result("audio_finalized", &recording, serde_json::json!({
                                 "finalization_ms": stopped.elapsed().as_secs_f64() * 1000.0,
                             }));
-                            let _ = proxy.send_event(Event::RecordingFinished(id, recording, stopped, hint));
+                            let _ = proxy.send_event(Event::RecordingFinished(id, recording, stopped));
                         });
                         state = State::Working {
                             id,

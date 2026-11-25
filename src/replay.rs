@@ -67,8 +67,9 @@ pub fn transcribe(
 
     let stopped = Instant::now();
     let hint = preview
-        .and_then(|preview| preview.ready().cloned())
-        .unwrap_or_default();
+        .map(|preview| preview.ready())
+        .unwrap_or_default()
+        .for_frames(end);
     let wav = audio::finish_samples(&samples.lock().unwrap(), SAMPLE_RATE)?;
     let raw = engines.transcribe(wav, canceled, &hint)?;
     let formatted = output::format_transcript(&raw, config.remove_trailing_period).to_owned();

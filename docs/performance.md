@@ -14,7 +14,30 @@ The [delivery latency update](delivery-latency.md) describes the October 30
 delivery changes and paste measurements. The engine comparison and 48 kHz
 resampling measurements below are from November.
 
-The current MLX profile uses 2/4/8/12/24-second recording previews, eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout. Recording triggers previews when the required audio arrives. After eight seconds, speech pauses and resumptions can also wake the GPU. Periodic wakes remain off. The November 19 reference profile kept the model resident, used a 2 GB cache, and issued one GPU wake per second during recording.
+The current MLX profile uses 2/4/8/12/18/24-second recording previews, eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout. Recording triggers previews when the required audio arrives. After eight seconds, speech pauses and resumptions can also wake the GPU. Periodic wakes remain off. The November 19 reference profile kept the model resident, used a 2 GB cache, and issued one GPU wake per second during recording.
+
+## Warm requests under 30 seconds
+
+On the 128 GB M5 Max, an extra preview at 18 seconds reduced warm final helper time by 17.03% across six recordings ending at 19.1–23.4 seconds. The preview itself cost a median 371 ms during recording. All twelve complete corpus recordings matched. A 23.4-second excerpt exposed a punctuation change on all three helper pairs. Signed recording replay reproduced the extra comma, taking 388 ms versus 415 ms for the installed schedule. This disqualifies the unconditional 18-second preview.
+
+The revised schedule uses the longer preview only when it retains every token of the completed 12-second preview as a prefix. At Stop, Nemo snapshots both available hints. The finalized recording's frame count selects the new hint only below 24 seconds, even if a last microphone buffer arrives after Stop. Across six fresh excerpts with five alternating helper pairs each, this rule improved warm final helper time by 11.23%. It selected the longer offer on three of the six. Across another 36 cutoffs it selected the longer offer on 20, and all 36 complete target token sequences matched through end-of-text.
+
+Three paired signed-app visits per passage measured real-time replay of saved audio through formatted response. The mean of the three per-passage median paired gains was 23.47% on the earlier guarded build. The 19.59-second project excerpt fell from 446 to 211 ms and the 23.37-second incident from 338 to 278 ms. The 21.36-second recipe retained the 12-second preview and went from 591 to 588 ms. Every timed raw and formatted transcript matched. All twelve full-corpus recordings retained 13 errors in 2,312 reference words. Preparing the additional preview occupied the helper for a median 383 ms during recording, including cases that later used the older hint. The replay timings are on AC and end before paste dispatch.
+
+The final signed binary replayed the same recipe at 23.99 and 24.00 seconds. The shorter recording used all 63 tokens from its 18-second preview. At exactly 24 seconds, and at 24.04 and 24.25 seconds with an active 24-second preview, it selected the same 43 tokens as the installed app. A separate 18.04-second Stop interrupted the new preview and returned the same text in 420 ms versus 422 ms. Each cutoff had one pair.
+
+Of 222 historical MLX deliveries, 190 ended before the extra preview could start, 11 ended between 18 and 24 seconds, and 21 reached the 24-second fallback. Only 11 of 208 sub-30-second recordings (5.3%) could use the new hint. Four of the eleven slowest short recordings fell in that window. Across all durations, none of the twelve slowest did. These counts describe opportunities on earlier builds. A recording in the window still needs a finished, matching preview.
+
+A speaker-to-microphone test played a 20.75-second reference through the MacBook speakers. The signed candidate captured 22.51 seconds, dispatched paste 343 ms after Stop, and inserted all 55 words with the expected formatting in a focused native editor. The final request reused 37 preview tokens. The live log records the count without identifying the selected checkpoint. The MLX helper exited between 1,199.866 and 1,200.033 seconds after transcription. The daemon stayed ready and reported the model unloaded.
+
+To exercise the updated app's normal saved-recording path with an accepted 18-second hint and a 24-second fallback, run the local signed bundle against the archived test audio.
+
+```sh
+run=artifacts/performance/short-swarm-nov24b
+"$run/product/Nemo.app/Contents/MacOS/nemo" transcribe --replay-recording --json \
+  "$run/schedule/consistent/audio/project19.59.wav" \
+  "$run/schedule/consistent/audio/recipe24.000.wav"
+```
 
 ## Longer 24-second recording previews on AC
 

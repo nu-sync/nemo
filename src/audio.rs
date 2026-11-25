@@ -72,7 +72,7 @@ pub struct Recording {
     pub preview: Option<Arc<RecordingPreview>>,
 }
 
-const PREVIEW_SECONDS: [usize; 5] = [2, 4, 8, 12, 24];
+const PREVIEW_SECONDS: [usize; 6] = [2, 4, 8, 12, 18, 24];
 
 pub type RecordingCallback = Arc<dyn Fn(Weak<RecordingPreview>, RecordingWork) + Send + Sync>;
 
@@ -149,6 +149,24 @@ pub struct RecordingPreview {
     tokens: [OnceLock<Vec<u32>>; PREVIEW_SECONDS.len()],
 }
 
+/// Offers that had finished when the user pressed Stop.
+#[derive(Default)]
+pub struct ReadyPreview {
+    standard: Vec<u32>,
+    before_24s: Option<(usize, Vec<u32>)>,
+}
+
+impl ReadyPreview {
+    pub fn for_frames(self, frames: usize) -> Vec<u32> {
+        if let Some((limit, tokens)) = self.before_24s
+            && frames < limit
+        {
+            return tokens;
+        }
+        self.standard
+    }
+}
+
 impl RecordingPreview {
     pub fn new(samples: &Arc<Mutex<Vec<f32>>>, sample_rate: u32) -> Arc<Self> {
         Arc::new(Self {
@@ -194,13 +212,33 @@ impl RecordingPreview {
     }
 
     pub fn publish(&self, index: usize, tokens: Vec<u32>) {
-        if !tokens.is_empty() {
-            let _ = self.tokens[index].set(tokens);
+        if tokens.is_empty() {
+            return;
         }
+        if PREVIEW_SECONDS[index] == 18
+            && !self.tokens[index - 1]
+                .get()
+                .is_some_and(|previous| tokens.starts_with(previous))
+        {
+            return;
+        }
+        let _ = self.tokens[index].set(tokens);
     }
 
-    pub fn ready(&self) -> Option<&Vec<u32>> {
-        self.tokens.iter().rev().find_map(OnceLock::get)
+    pub fn ready(&self) -> ReadyPreview {
+        let mut ready = ReadyPreview::default();
+        for (slot, seconds) in self.tokens.iter().zip(PREVIEW_SECONDS).rev() {
+            if let Some(tokens) = slot.get() {
+                if seconds == 18 {
+                    // Stream shutdown can append a final buffer past the 24 s boundary.
+                    ready.before_24s = Some((24 * self.sample_rate as usize, tokens.clone()));
+                } else {
+                    ready.standard = tokens.clone();
+                    break;
+                }
+            }
+        }
+        ready
     }
 }
 
@@ -291,13 +329,14 @@ impl Recording {
         self.error.lock().unwrap().clone()
     }
 
-    pub fn finish(self) -> Result<Vec<u8>> {
+    pub fn finish(self, preview: ReadyPreview) -> Result<(Vec<u8>, Vec<u32>)> {
         drop(self.stream);
         if let Some(error) = self.error.lock().unwrap().take() {
             bail!("Microphone failed: {error}");
         }
         let samples = self.samples.lock().unwrap();
-        finish_samples(&samples, self.sample_rate)
+        let wav = finish_samples(&samples, self.sample_rate)?;
+        Ok((wav, preview.for_frames(samples.len())))
     }
 }
 
@@ -518,15 +557,15 @@ mod tests {
             .filter(|frame| RecordingPreview::crosses_threshold(*frame, frame + 1, 2))
             .map(|frame| frame + 1)
             .collect();
-        assert_eq!(observed, [4, 8, 16, 24, 48]);
+        assert_eq!(observed, [4, 8, 16, 24, 36, 48]);
         assert!(!RecordingPreview::crosses_threshold(48, 48, 2));
     }
 
     #[test]
     fn only_the_24_second_preview_accepts_more_than_64_tokens() {
         assert_eq!(
-            [0, 1, 2, 3, 4].map(RecordingPreview::token_limit),
-            [64, 64, 64, 64, 80]
+            [0, 1, 2, 3, 4, 5].map(RecordingPreview::token_limit),
+            [64, 64, 64, 64, 64, 80]
         );
     }
 
@@ -557,6 +596,7 @@ mod tests {
                 (1_365, SpeechBoundary),
                 (1_425, SpeechBoundary),
                 (1_501, SpeechBoundary),
+                (1_800, Preview),
                 (2_400, Preview),
             ]
         );
@@ -590,13 +630,54 @@ mod tests {
         assert_eq!((latest, prefix.len()), (3, 24));
         preview.publish(latest, vec![3]);
         preview.publish(first, vec![1]);
-        assert_eq!(preview.ready(), Some(&vec![3]));
+        assert_eq!(preview.ready().for_frames(26), [3]);
+        samples.lock().unwrap().resize(36, 3.0);
+        let (middle, prefix, _) = preview.take_prefix().unwrap();
+        assert_eq!(prefix.len(), 36);
+        assert_eq!(RecordingPreview::token_limit(middle), 64);
         samples.lock().unwrap().resize(50, 3.0);
-        assert_eq!(preview.take_prefix().unwrap().1.len(), 48);
-        preview.publish(4, vec![]);
-        assert_eq!(preview.ready(), Some(&vec![3]));
+        let (last, prefix, _) = preview.take_prefix().unwrap();
+        assert_eq!(prefix.len(), 48);
+        assert_eq!(RecordingPreview::token_limit(last), 80);
+        preview.publish(last, vec![]);
+        assert_eq!(preview.ready().for_frames(50), [3]);
         assert!(preview.take_prefix().is_none());
-        assert!(RecordingPreview::new(&samples, 2).ready().is_none());
+        assert!(
+            RecordingPreview::new(&samples, 2)
+                .ready()
+                .for_frames(50)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn intermediate_preview_requires_a_completed_matching_twelve_second_offer() {
+        let samples = Arc::new(Mutex::new(vec![0.0; 40]));
+        let missing = RecordingPreview::new(&samples, 2);
+        missing.publish(4, vec![1, 2, 3]);
+        missing.publish(3, vec![1, 2]);
+        assert_eq!(missing.ready().for_frames(40), [1, 2]);
+
+        let divergent = RecordingPreview::new(&samples, 2);
+        divergent.publish(3, vec![1, 2]);
+        divergent.publish(4, vec![1, 7, 3]);
+        assert_eq!(divergent.ready().for_frames(40), [1, 2]);
+    }
+
+    #[test]
+    fn stop_uses_final_frames_and_only_hints_already_published() {
+        let samples = Arc::new(Mutex::new(vec![0.0; 47]));
+        let ready = RecordingPreview::new(&samples, 2);
+        ready.publish(3, vec![1, 2]);
+        let before_extension = ready.ready();
+        ready.publish(4, vec![1, 2, 3]);
+        assert_eq!(before_extension.for_frames(47), [1, 2]);
+        assert_eq!(ready.ready().for_frames(47), [1, 2, 3]);
+        let at_stop = ready.ready();
+        samples.lock().unwrap().push(0.0);
+        ready.publish(5, vec![9, 8]);
+        assert_eq!(at_stop.for_frames(samples.lock().unwrap().len()), [1, 2]);
+        assert_eq!(ready.ready().for_frames(48), [9, 8]);
     }
 
     #[test]
