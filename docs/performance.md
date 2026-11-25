@@ -16,6 +16,33 @@ resampling measurements below are from November.
 
 The current MLX profile uses 2/4/8/12/18/24-second recording previews, eight draft tokens, a 1 GB buffer cache and a 20-minute idle timeout. Recording triggers previews when the required audio arrives. After eight seconds, speech pauses and resumptions can also wake the GPU. Periodic wakes remain off. The November 19 reference profile kept the model resident, used a 2 GB cache, and issued one GPU wake per second during recording.
 
+## Benchmark numbers for the README
+
+Both series used the same frozen [speech fixtures](../benchmarks/speech/README.md)
+on a 128 GB Apple M5 Max. Each median describes repeated runs of one English
+passage with the model loaded. The two series have different timing endpoints.
+
+| Fixture | Default engine request, median | MLX-Audio Stop to formatted text, median | MLX-Audio samples |
+| --- | ---: | ---: | ---: |
+| 5 s lunch message | 310 ms | 137.6 ms | 12 |
+| 10 s garden note | 465 ms | 184.6 ms | 6 |
+| 30 s project update | 1,072 ms | 312.9 ms | 6 |
+| 60 s design review | 1,916 ms | 1,053.6 ms | 6 |
+
+The [November 9 engine comparison](engine-comparison-2026-11-09.md#warm-requests)
+measured 15 warm `nemo-speech` inference requests per clip through Nemo's
+`transcribe` command. Its timer starts when the app sends the final audio and
+ends when the inference response arrives.
+
+The November 25 AC-powered MLX-Audio series used the `a5a3f12` preview schedule,
+MLX 0.32.4, MLX-Audio 0.6.3, and the Nemotron 30B NVFP4 checkpoint. Isolated
+Nemo CLI processes replayed 48 kHz mono audio at recording speed, with recording
+previews enabled. The timer ran from simulated Stop through formatting. The
+5-second value pools 12 control visits from the preview-policy screen. The other
+three values are the unmodified schedule's six control visits per held-out clip.
+The local `artifacts/performance/overnight-preview-ac-nov25/` run retains the
+protocol, build and model identities, and per-trial timings.
+
 ## Warm requests under 30 seconds
 
 On the 128 GB M5 Max, an extra preview at 18 seconds reduced warm final helper time by 17.03% across six recordings ending at 19.1–23.4 seconds. The preview itself cost a median 371 ms during recording. All twelve complete corpus recordings matched. A 23.4-second excerpt exposed a punctuation change on all three helper pairs. Signed recording replay reproduced the extra comma, taking 388 ms versus 415 ms for the installed schedule. This disqualifies the unconditional 18-second preview.

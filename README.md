@@ -2,12 +2,25 @@
 
 Local voice dictation for Apple Silicon Macs. Tap **right Option** to record, then tap it again to transcribe and paste into the focused app.
 
-Audio is processed on your Mac. No account or API key is required.
+Audio is processed on your Mac. No account or API key is required. After installation and model download, dictation works offline.
 
-After installation and model download, dictation works offline. The controller and
-inference runtime deny external networking; a constrained helper fetches only the
-pinned model. See the [local-only audit](docs/local-only-audit.md) for controls,
-license checks, verification, and the separate network requirements of source installation.
+## Performance
+
+With the model already loaded, a **30-second dictation took about 0.31 seconds
+after Stop** with opt-in MLX-Audio on an Apple M5 Max (128 GB). The default
+engine took **1.07 seconds for inference** on the same clip in a separate test.
+
+| Speech length | Default `nemo-speech` inference | Opt-in `mlx-audio` Stop to formatted text |
+| --- | ---: | ---: |
+| 5 seconds | 0.31 s | 0.14 s |
+| 10 seconds | 0.47 s | 0.18 s |
+| 30 seconds | 1.07 s | 0.31 s |
+| 60 seconds | 1.92 s | 1.05 s |
+
+Each number is a warm median for one saved speech clip. MLX-Audio uses previews
+while you speak. Both measurements end before paste, and the wait varies with
+the Mac, the passage, and whether the model needs to load. See the
+[benchmark methods and results](docs/performance.md#benchmark-numbers-for-the-readme).
 
 ## Engines
 
