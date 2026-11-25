@@ -9,6 +9,7 @@ It is opt-in. The default stays `nemo-speech`; MLX-Audio runs only when `config.
 ```sh
 nemo quit
 cargo xtask install
+uv sync --locked --script "$HOME/Applications/Nemo.app/Contents/Resources/runtime/mlx-serve.py"
 nemo backend setup mlx-audio
 ```
 
@@ -34,7 +35,7 @@ backend = "mlx-audio"
 mtp_draft_tokens = 8
 ```
 
-The bundled runner applies the wired-memory limit that keeps inference tails tight, and a 1 GB limit on MLX's buffer cache. Without the cache limit the engine grew from 30 GB after load to 38–40 GB after long clips. It `exec`s the interpreter so Nemo owns and reaps the engine process, and refuses to start a third engine. Do not bypass the runner.
+The bundled runner applies the wired-memory limit that keeps inference tails tight, and a 1 GB limit on MLX's buffer cache. Without the cache limit the engine grew from 30 GB after load to 38–40 GB after long clips. It syncs the bundled lockfile offline and `exec`s that environment's interpreter so Nemo owns and reaps the engine process. It refuses to start a third engine.
 
 ## Return to the included backend
 

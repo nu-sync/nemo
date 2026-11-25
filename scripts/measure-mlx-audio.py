@@ -3,7 +3,7 @@
 # requires-python = ">=3.12,<3.14"
 # dependencies = [
 #     "mlx==0.32.4",
-#     "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@7a0986280fe295f4cf40f64164bb23abed416a22",
+#     "mlx-audio @ git+https://github.com/Neywa-Labs/mlx-audio.git@93cfb9ff82c10e610ce65570b1c2efc1f0f9411d",
 #     "numpy",
 #     "huggingface-hub",
 # ]
@@ -34,7 +34,7 @@ import wave
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "mlx-audio"
 CACHE = Path.home() / 'Library/Caches/nemo-mlx'
-REVISION = '7a0986280fe295f4cf40f64164bb23abed416a22'
+REVISION = '93cfb9ff82c10e610ce65570b1c2efc1f0f9411d'
 CHECKPOINT = 'nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-NVFP4'
 CLIPS = ('005s-lunch', '020s-weekend', '060s-design-review')
 

@@ -31,15 +31,25 @@ export NEMO_MLX_WIRED="${NEMO_MLX_WIRED:-25000000000}"
 # audio length. A 1 GB limit kept the short-recording helper near 26 GB on the M5 Max.
 export NEMO_MLX_CACHE="${NEMO_MLX_CACHE:-1000000000}"
 
-# The uv-managed environment for this script's lock, so the engine process is the one the
-# supervisor spawns. Falls back to `uv run` only if that environment is missing.
-PY=""
-for candidate in "$HOME"/.cache/uv/environments-v2/mlx-serve-*/bin/python; do
-    [ -x "$candidate" ] && PY="$candidate" && break
-done
-
-if [ -n "$PY" ]; then
-    exec "$PY" "$SCRIPT" "$@"
+# The sandbox has a fixed PATH. Also support uv's standalone installer and Nix.
+UV="$(command -v uv || true)"
+if [ -z "$UV" ]; then
+    for candidate in "$HOME/.local/bin/uv" "$HOME/.nix-profile/bin/uv"; do
+        if [ -x "$candidate" ]; then
+            UV="$candidate"
+            break
+        fi
+    done
 fi
-echo "mlx-runner: no prepared environment for $SCRIPT; falling back to 'uv run' (engine becomes a child of uv)" >&2
-exec "$(command -v uv)" run --locked "$SCRIPT" "$@"
+if [ -z "$UV" ]; then
+    echo "mlx-runner: uv is required to locate the locked helper environment" >&2
+    exit 1
+fi
+
+# The cache can contain several helpers with incompatible dependency versions.
+if ! "$UV" sync --quiet --offline --locked --script "$SCRIPT"; then
+    printf 'mlx-runner: prepare the locked environment with uv sync --locked --script "%s"\n' "$SCRIPT" >&2
+    exit 1
+fi
+PY="$("$UV" python find --offline --script "$SCRIPT")"
+exec "$PY" "$SCRIPT" "$@"

@@ -1,8 +1,12 @@
 from contextlib import closing
 import http.client
 import importlib.util
+import os
 from pathlib import Path
+import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -24,6 +28,31 @@ def write_pcm(path, pcm, rate=48000, channels=1):
 
 
 class MlxCaptureTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("uv"), "requires uv")
+    def test_runner_execs_the_locked_script_environment_with_a_stale_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = root / ".cache/uv/environments-v2/mlx-serve-old/bin/python"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("#!/bin/sh\nexit 42\n")
+            stale.chmod(0o755)
+            script = root / "mlx-serve.py"
+            script.write_text(
+                "# /// script\n# dependencies = []\n# ///\n"
+                "import os, sys\nprint(os.getpid(), sys.executable)\n"
+            )
+            env = dict(os.environ, HOME=directory, UV_CACHE_DIR=str(root / "uv"),
+                       UV_PYTHON=sys.executable, NEMO_MLX_SCRIPT=str(script), NEMO_ENGINE_CAP="99")
+            subprocess.run(["uv", "lock", "--offline", "--script", script],
+                           env=env, check=True, capture_output=True)
+            with subprocess.Popen([SCRIPT.with_name("mlx-runner.sh")], env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+                pid, interpreter = stdout.strip().split(" ", 1)
+                self.assertEqual(int(pid), process.pid)
+                self.assertTrue(Path(interpreter).is_relative_to(root / "uv"))
+
     @unittest.skipUnless(importlib.util.find_spec("mlx_audio"), "requires the MLX helper environment")
     def test_capture_matches_mlx_audio_filter_across_chunk_boundaries(self):
         import numpy as np
